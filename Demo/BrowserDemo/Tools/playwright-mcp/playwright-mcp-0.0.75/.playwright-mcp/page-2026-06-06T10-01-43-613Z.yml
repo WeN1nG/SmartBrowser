@@ -1,0 +1,356 @@
+- generic [ref=e1]:
+  - generic [ref=e2]:
+    - button "提交" [ref=e4] [cursor=pointer]
+    - text: 作业
+  - generic [ref=e6]:
+    - generic [ref=e7]:
+      - generic [ref=e10]:
+        - option "作业2" [ref=e11]
+        - 'option "题量: 11 满分: 100 作答时间: 06-04 15:35 至 06-11 23:55 未达到及格线，请重做" [ref=e12]':
+          - generic [ref=e13]: "题量: 11"
+          - generic [ref=e14]: "满分: 100"
+          - paragraph [ref=e15]:
+            - text: "作答时间:"
+            - emphasis [ref=e16]: 06-04 15:35
+            - text: 至
+            - emphasis [ref=e17]: 06-11 23:55
+          - link "未达到及格线，请重做" [ref=e18] [cursor=pointer]:
+            - /url: javascript:;
+            - text: 未达到及格线，请重做
+      - generic [ref=e21]:
+        - generic [ref=e22]:
+          - option "一. 完型填空（共1题，9分）" [ref=e23]
+          - option "题目 1." [ref=e24]:
+            - option [ref=e25]: "1. (完型填空) Directions: For each blank in the following passage there are four words or phrases marked A, B, C and D. Fill in each blank with the word or phrase that best fits the context. An operating system (OS) is a fundamental piece of system software that manages computer hardware and software resources. It acts as an intermediary between applications and the physical hardware, providing a convenient 1 for users. The history of operating systems has evolved through distinct stages, beginning with the early era of manual operation, progressing to 2 systems that processed jobs in groups to improve CPU utilization, and then to the revolutionary time-sharing systems like Unix that allowed multiple users to interact simultaneously. Modern operating systems are built upon three core principles. The first is 3 , which hides complex hardware details behind clean, high-level interfaces such as files and processes. The second is resource management, where the OS must safely and efficiently allocate CPU time, memory, and storage. The third is virtualization, which creates the illusion that each program has exclusive access to the machine by rapidly switching the CPU among multiple tasks, a technique known as 4 . The OS performs several key management functions. 5 management involves creating, scheduling, and terminating instances of running programs. To handle limited physical memory, the OS employs 6 memory techniques, using disk storage to supplement RAM and provide a larger address space for applications. Furthermore, the OS provides 7 management to organize data on storage devices efficiently and ensure quick retrieval. Operating systems can be classified based on their use. 8 operating systems, such as Windows and macOS, are designed for individual users and prioritize ease of use and a graphical interface (GUI). In contrast, server operating systems are optimized for reliability and network service provision. For devices with strict timing constraints, such as medical equipment, 9 systems are used to guarantee response times. Security is also paramount; the OS enforces 10 mechanisms, including user authentication and access control, to protect data and resources from unauthorized use."
+            - generic [ref=e26]:
+              - generic [ref=e28]:
+                - option "(1)" [ref=e29]
+                - generic [ref=e30]:
+                  - radio "C database选择" [ref=e31] [cursor=pointer]:
+                    - generic [ref=e32]: A
+                    - generic [ref=e33]: database
+                  - radio "A interface选择" [checked] [ref=e34] [cursor=pointer]:
+                    - generic [ref=e35]: B
+                    - generic [ref=e36]: interface
+                  - radio "B compiler选择" [ref=e37] [cursor=pointer]:
+                    - generic [ref=e38]: C
+                    - generic [ref=e39]: compiler
+                  - radio "D algorithm选择" [ref=e40] [cursor=pointer]:
+                    - generic [ref=e41]: D
+                    - generic [ref=e42]: algorithm
+              - generic [ref=e44]:
+                - option "(2)" [ref=e45]
+                - generic [ref=e46]:
+                  - radio "D mobile选择" [ref=e47] [cursor=pointer]:
+                    - generic [ref=e48]: A
+                    - generic [ref=e49]: mobile
+                  - radio "A real-time选择" [ref=e50] [cursor=pointer]:
+                    - generic [ref=e51]: B
+                    - generic [ref=e52]: real-time
+                  - radio "B batch processing选择" [checked] [ref=e53] [cursor=pointer]:
+                    - generic [ref=e54]: C
+                    - generic [ref=e55]: batch processing
+                  - radio "C personal computer选择" [ref=e56] [cursor=pointer]:
+                    - generic [ref=e57]: D
+                    - generic [ref=e58]: personal computer
+              - generic [ref=e60]:
+                - option "(3)" [ref=e61]
+                - generic [ref=e62]:
+                  - radio "D isolation选择" [ref=e63] [cursor=pointer]:
+                    - generic [ref=e64]: A
+                    - generic [ref=e65]: isolation
+                  - radio "A virtualization选择" [ref=e66] [cursor=pointer]:
+                    - generic [ref=e67]: B
+                    - generic [ref=e68]: virtualization
+                  - radio "B abstraction选择" [checked] [ref=e69] [cursor=pointer]:
+                    - generic [ref=e70]: C
+                    - generic [ref=e71]: abstraction
+                  - radio "C encryption选择" [ref=e72] [cursor=pointer]:
+                    - generic [ref=e73]: D
+                    - generic [ref=e74]: encryption
+              - generic [ref=e76]:
+                - option "(4)" [ref=e77]
+                - generic [ref=e78]:
+                  - radio "A parallelism选择" [ref=e79] [cursor=pointer]:
+                    - generic [ref=e80]: A
+                    - generic [ref=e81]: parallelism
+                  - radio "D spooling选择" [ref=e82] [cursor=pointer]:
+                    - generic [ref=e83]: B
+                    - generic [ref=e84]: spooling
+                  - radio "B time-sharing选择" [checked] [ref=e85] [cursor=pointer]:
+                    - generic [ref=e86]: C
+                    - generic [ref=e87]: time-sharing
+                  - radio "C buffering选择" [ref=e88] [cursor=pointer]:
+                    - generic [ref=e89]: D
+                    - generic [ref=e90]: buffering
+              - generic [ref=e92]:
+                - option "(5)" [ref=e93]
+                - generic [ref=e94]:
+                  - radio "A File选择" [ref=e95] [cursor=pointer]:
+                    - generic [ref=e96]: A
+                    - generic [ref=e97]: File
+                  - radio "D Network选择" [ref=e98] [cursor=pointer]:
+                    - generic [ref=e99]: B
+                    - generic [ref=e100]: Network
+                  - radio "B Process选择" [checked] [ref=e101] [cursor=pointer]:
+                    - generic [ref=e102]: C
+                    - generic [ref=e103]: Process
+                  - radio "C Device选择" [ref=e104] [cursor=pointer]:
+                    - generic [ref=e105]: D
+                    - generic [ref=e106]: Device
+              - generic [ref=e108]:
+                - option "(6)" [ref=e109]
+                - generic [ref=e110]:
+                  - radio "B virtual选择" [checked] [ref=e111] [cursor=pointer]:
+                    - generic [ref=e112]: A
+                    - generic [ref=e113]: virtual
+                  - radio "A physical选择" [ref=e114] [cursor=pointer]:
+                    - generic [ref=e115]: B
+                    - generic [ref=e116]: physical
+                  - radio "D cache选择" [ref=e117] [cursor=pointer]:
+                    - generic [ref=e118]: C
+                    - generic [ref=e119]: cache
+                  - radio "C main选择" [ref=e120] [cursor=pointer]:
+                    - generic [ref=e121]: D
+                    - generic [ref=e122]: main
+              - generic [ref=e124]:
+                - option "(7)" [ref=e125]
+                - generic [ref=e126]:
+                  - radio "B memory选择" [ref=e127] [cursor=pointer]:
+                    - generic [ref=e128]: A
+                    - generic [ref=e129]: memory
+                  - radio "D device选择" [ref=e130] [cursor=pointer]:
+                    - generic [ref=e131]: B
+                    - generic [ref=e132]: device
+                  - radio "C file选择" [checked] [ref=e133] [cursor=pointer]:
+                    - generic [ref=e134]: C
+                    - generic [ref=e135]: file
+                  - radio "A process选择" [ref=e136] [cursor=pointer]:
+                    - generic [ref=e137]: D
+                    - generic [ref=e138]: process
+              - generic [ref=e140]:
+                - option "(8)" [ref=e141]
+                - generic [ref=e142]:
+                  - radio "C Personal computer选择" [checked] [ref=e143] [cursor=pointer]:
+                    - generic [ref=e144]: A
+                    - generic [ref=e145]: Personal computer
+                  - radio "D Server选择" [ref=e146] [cursor=pointer]:
+                    - generic [ref=e147]: B
+                    - generic [ref=e148]: Server
+                  - radio "B Real-time选择" [ref=e149] [cursor=pointer]:
+                    - generic [ref=e150]: C
+                    - generic [ref=e151]: Real-time
+                  - radio "A Embedded选择" [ref=e152] [cursor=pointer]:
+                    - generic [ref=e153]: D
+                    - generic [ref=e154]: Embedded
+              - generic [ref=e156]:
+                - option "(9)" [ref=e157]
+                - generic [ref=e158]:
+                  - radio "C Distributed选择" [ref=e159] [cursor=pointer]:
+                    - generic [ref=e160]: A
+                    - generic [ref=e161]: Distributed
+                  - radio "B Real-time选择" [checked] [ref=e162] [cursor=pointer]:
+                    - generic [ref=e163]: B
+                    - generic [ref=e164]: Real-time
+                  - radio "D Batch选择" [ref=e165] [cursor=pointer]:
+                    - generic [ref=e166]: C
+                    - generic [ref=e167]: Batch
+                  - radio "A Mobile选择" [ref=e168] [cursor=pointer]:
+                    - generic [ref=e169]: D
+                    - generic [ref=e170]: Mobile
+              - generic [ref=e172]:
+                - option "(10)" [ref=e173]
+                - generic [ref=e174]:
+                  - radio "D network选择" [ref=e175] [cursor=pointer]:
+                    - generic [ref=e176]: A
+                    - generic [ref=e177]: network
+                  - radio "B resource选择" [ref=e178] [cursor=pointer]:
+                    - generic [ref=e179]: B
+                    - generic [ref=e180]: resource
+                  - radio "C system选择" [ref=e181] [cursor=pointer]:
+                    - generic [ref=e182]: C
+                    - generic [ref=e183]: system
+                  - radio "A security选择" [checked] [ref=e184] [cursor=pointer]:
+                    - generic [ref=e185]: D
+                    - generic [ref=e186]: security
+        - generic [ref=e187]:
+          - option "二. 单选题（共10题，91分）" [ref=e188]
+          - option "题目 2." [ref=e189]:
+            - option [ref=e190]: 2. (单选题) Which type of NoSQL database is specifically optimized for data with complex interconnections, such as social networks?( )
+            - generic [ref=e191]:
+              - radio "B Key-Value Store选择" [ref=e192]:
+                - generic [ref=e193]: A
+                - paragraph [ref=e195]: Key-Value Store
+              - radio "A Document Store选择" [ref=e196]:
+                - generic [ref=e197]: B
+                - paragraph [ref=e199]: Document Store
+              - radio "D Graph Database选择" [checked] [ref=e200]:
+                - generic [ref=e201]: C
+                - paragraph [ref=e203]: Graph Database
+              - radio "C Column-Family Store选择" [ref=e204]:
+                - generic [ref=e205]: D
+                - paragraph [ref=e207]: Column-Family Store
+          - option "题目 3." [ref=e208]:
+            - option [ref=e209]: 3. (单选题) In the Relational Data Model, a 'Tuple' corresponds to:( )
+            - generic [ref=e210]:
+              - radio "A A column in a table选择" [ref=e211]:
+                - generic [ref=e212]: A
+                - paragraph [ref=e214]: A column in a table
+              - radio "D The relationship between two tables选择" [ref=e215]:
+                - generic [ref=e216]: B
+                - paragraph [ref=e218]: The relationship between two tables
+              - radio "C A single row in a table选择" [checked] [ref=e219]:
+                - generic [ref=e220]: C
+                - paragraph [ref=e222]: A single row in a table
+              - radio "B A unique identifier for a row选择" [ref=e223]:
+                - generic [ref=e224]: D
+                - paragraph [ref=e226]: A unique identifier for a row
+          - option "题目 4." [ref=e227]:
+            - option [ref=e228]: 4. (单选题) In the Three-Level Schema Architecture, which level describes what data is stored and the relationships among data, hiding the physical storage details?( )
+            - generic [ref=e229]:
+              - radio "A Internal Level选择" [ref=e230]:
+                - generic [ref=e231]: A
+                - paragraph [ref=e233]: Internal Level
+              - radio "D Physical Level选择" [ref=e234]:
+                - generic [ref=e235]: B
+                - paragraph [ref=e237]: Physical Level
+              - radio "C External Level选择" [ref=e238]:
+                - generic [ref=e239]: C
+                - paragraph [ref=e241]: External Level
+              - radio "B Conceptual Level选择" [checked] [ref=e242]:
+                - generic [ref=e243]: D
+                - paragraph [ref=e245]: Conceptual Level
+          - option "题目 5." [ref=e246]:
+            - option [ref=e247]: 5. (单选题) Which type of key is a minimal superkey, meaning no subset of it can also uniquely identify a tuple?( )
+            - generic [ref=e248]:
+              - radio "D Composite Key选择" [ref=e249]:
+                - generic [ref=e250]: A
+                - paragraph [ref=e252]: Composite Key
+              - radio "A Primary Key选择" [ref=e253]:
+                - generic [ref=e254]: B
+                - paragraph [ref=e256]: Primary Key
+              - radio "C Candidate Key选择" [checked] [ref=e257]:
+                - generic [ref=e258]: C
+                - paragraph [ref=e260]: Candidate Key
+              - radio "B Foreign Key选择" [ref=e261]:
+                - generic [ref=e262]: D
+                - paragraph [ref=e264]: Foreign Key
+          - option "题目 6." [ref=e265]:
+            - option [ref=e266]: 6. (单选题) Which SQL command belongs to the Data Definition Language (DDL)?( )
+            - generic [ref=e267]:
+              - radio "C SELECT选择" [ref=e268]:
+                - generic [ref=e269]: A
+                - paragraph [ref=e271]: SELECT
+              - radio "D CREATE选择" [checked] [ref=e272]:
+                - generic [ref=e273]: B
+                - paragraph [ref=e275]: CREATE
+              - radio "B UPDATE选择" [ref=e276]:
+                - generic [ref=e277]: C
+                - paragraph [ref=e279]: UPDATE
+              - radio "A INSERT选择" [ref=e280]:
+                - generic [ref=e281]: D
+                - paragraph [ref=e283]: INSERT
+          - option "题目 7." [ref=e284]:
+            - option [ref=e285]: 7. (单选题) Which ACID property ensures that a transaction is treated as a single "unit" of work, which either completes entirely or not at all?( )
+            - generic [ref=e286]:
+              - radio "B Consistency选择" [ref=e287]:
+                - generic [ref=e288]: A
+                - paragraph [ref=e290]: Consistency
+              - radio "D Durability选择" [ref=e291]:
+                - generic [ref=e292]: B
+                - paragraph [ref=e294]: Durability
+              - radio "C Isolation选择" [ref=e295]:
+                - generic [ref=e296]: C
+                - paragraph [ref=e298]: Isolation
+              - radio "A Atomicity选择" [checked] [ref=e299]:
+                - generic [ref=e300]: D
+                - paragraph [ref=e302]: Atomicity
+          - option "题目 8." [ref=e303]:
+            - option [ref=e304]: 8. (单选题) What is the primary purpose of a Database Management System (DBMS)? ( )
+            - generic [ref=e305]:
+              - radio "B To provide an interface between users/applications and the physical data选择" [checked] [ref=e306]:
+                - generic [ref=e307]: A
+                - paragraph [ref=e309]: To provide an interface between users/applications and the physical data
+              - radio "C To design the graphical user interface (GUI) for end-users选择" [ref=e310]:
+                - generic [ref=e311]: B
+                - paragraph [ref=e313]: To design the graphical user interface (GUI) for end-users
+              - radio "A To act as a firewall against cyber attacks选择" [ref=e314]:
+                - generic [ref=e315]: C
+                - paragraph [ref=e317]: To act as a firewall against cyber attacks
+              - radio "D To write application code for specific business logic选择" [ref=e318]:
+                - generic [ref=e319]: D
+                - paragraph [ref=e321]: To write application code for specific business logic
+          - option "题目 9." [ref=e322]:
+            - option [ref=e323]: 9. (单选题) In Entity-Relationship (ER) Modeling, what does Cardinality refer to?( )
+            - generic [ref=e324]:
+              - radio "C The primary key of a relationship选择" [ref=e325]:
+                - generic [ref=e326]: A
+                - paragraph [ref=e328]: The primary key of a relationship
+              - radio "B The number of instances of one entity associated with instances of another entity选择" [checked] [ref=e329]:
+                - generic [ref=e330]: B
+                - paragraph [ref=e332]: The number of instances of one entity associated with instances of another entity
+              - radio "D The data type of an attribute选择" [ref=e333]:
+                - generic [ref=e334]: C
+                - paragraph [ref=e336]: The data type of an attribute
+              - radio "A The number of attributes an entity has选择" [ref=e337]:
+                - generic [ref=e338]: D
+                - paragraph [ref=e340]: The number of attributes an entity has
+          - option "题目 10." [ref=e341]:
+            - option [ref=e342]: 10. (单选题) Which of the following best describes 'Referential Integrity'?( )
+            - generic [ref=e343]:
+              - radio "D The rule that ensures a database backup is consistent.选择" [ref=e344]:
+                - generic [ref=e345]: A
+                - paragraph [ref=e347]: The rule that ensures a database backup is consistent.
+              - radio "C The rule that all attributes must have a defined data type.选择" [ref=e348]:
+                - generic [ref=e349]: B
+                - paragraph [ref=e351]: The rule that all attributes must have a defined data type.
+              - radio "B The rule that a primary key cannot contain null values.选择" [ref=e352]:
+                - generic [ref=e353]: C
+                - paragraph [ref=e355]: The rule that a primary key cannot contain null values.
+              - radio "A The rule that a foreign key must match the primary key of another relation or be null.选择" [checked] [ref=e356]:
+                - generic [ref=e357]: D
+                - paragraph [ref=e359]: The rule that a foreign key must match the primary key of another relation or be null.
+          - option "题目 11." [ref=e360]:
+            - option [ref=e361]:
+              - text: 11. (单选题)
+              - paragraph [ref=e362]: Which of the following is not a problem typically associated with traditional File-Processing Systems?( )
+            - generic [ref=e363]:
+              - radio "B Data Inconsistency选择" [ref=e364]:
+                - generic [ref=e365]: A
+                - paragraph [ref=e367]: Data Inconsistency
+              - radio "C Data Abstraction选择" [checked] [ref=e368]:
+                - generic [ref=e369]: B
+                - paragraph [ref=e371]: Data Abstraction
+              - radio "A Data Redundancy选择" [ref=e372]:
+                - generic [ref=e373]: C
+                - paragraph [ref=e375]: Data Redundancy
+              - radio "D Data Isolation选择" [ref=e376]:
+                - generic [ref=e377]: D
+                - paragraph [ref=e379]: Data Isolation
+    - generic [active] [ref=e381]:
+      - generic [ref=e382]: 一. 完型填空（9分）
+      - list [ref=e383]:
+        - listitem [ref=e384] [cursor=pointer]: "1"
+      - generic [ref=e385]: 二. 单选题（91分）
+      - list [ref=e386]:
+        - listitem [ref=e387] [cursor=pointer]: "2"
+        - listitem [ref=e388] [cursor=pointer]: "3"
+        - listitem [ref=e389] [cursor=pointer]: "4"
+        - listitem [ref=e390] [cursor=pointer]: "5"
+        - listitem [ref=e391] [cursor=pointer]: "6"
+        - listitem [ref=e392] [cursor=pointer]: "7"
+        - listitem [ref=e393] [cursor=pointer]: "8"
+        - listitem [ref=e394] [cursor=pointer]: "9"
+        - listitem [ref=e395] [cursor=pointer]: "10"
+        - listitem [ref=e396] [cursor=pointer]: "11"
+    - row "作业作答结尾"
+  - generic [ref=e398]:
+    - alertdialog [ref=e399]:
+      - link "关闭" [ref=e400] [cursor=pointer]:
+        - /url: javascript:;
+        - button "关闭" [ref=e401]
+      - option "提示" [ref=e402]
+    - paragraph [ref=e404]: 确认提交？
+    - generic [ref=e405]:
+      - button "确定" [ref=e406] [cursor=pointer]: 提交
+      - button "取消" [ref=e407] [cursor=pointer]

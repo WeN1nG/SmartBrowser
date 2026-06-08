@@ -1,0 +1,44 @@
+- generic [ref=e2]:
+  - generic [ref=e4]:
+    - link "客服" [ref=e5] [cursor=pointer]:
+      - /url: /v5/toCustomer
+    - generic [ref=e6]:
+      - heading "用户登录" [level=3] [ref=e7]
+      - generic [ref=e8]:
+        - generic [ref=e9]:
+          - textbox "手机号/超星号" [ref=e10]
+          - paragraph
+        - generic [ref=e11]:
+          - textbox "学习通密码" [ref=e12]
+          - link "忘记密码？" [ref=e15] [cursor=pointer]:
+            - /url: javaScript:void(0)
+          - paragraph
+        - generic [ref=e16]:
+          - paragraph
+          - button "登录" [ref=e17] [cursor=pointer]
+      - generic [ref=e18]:
+        - generic [ref=e19]: 下次自动登录
+        - generic [ref=e23]:
+          - link "新用户注册" [ref=e24] [cursor=pointer]:
+            - /url: javaScript:void(0)
+          - link "验证码登录" [ref=e25] [cursor=pointer]:
+            - /url: javaScript:void(0)
+      - link "其他登录方式" [ref=e27] [cursor=pointer]:
+        - /url: javaScript:void(0)
+      - paragraph [ref=e28]:
+        - text: 我已阅读并同意学习通
+        - link "《隐私政策》" [ref=e29] [cursor=pointer]:
+          - /url: https://homewh.chaoxing.com/agree/privacyPolicy?appId=900001
+        - text: 和
+        - link "《用户协议》" [ref=e30] [cursor=pointer]:
+          - /url: https://homewh.chaoxing.com/agree/userAgreement?appId=900001
+    - generic [ref=e32]:
+      - img [ref=e34]
+      - paragraph [ref=e35]: 使用学习通APP扫码登录
+  - paragraph [ref=e37]:
+    - generic [ref=e38]:
+      - text: Copyright © 2026 北京世纪超星信息技术发展有限责任公司
+      - link "京ICP备10040544号-2" [ref=e39] [cursor=pointer]:
+        - /url: https://beian.miit.gov.cn
+    - link "京公网安备 11010802021885号" [ref=e42] [cursor=pointer]:
+      - /url: http://www.beian.gov.cn/portal/registerSystemInfo?recordcode=11010802021885

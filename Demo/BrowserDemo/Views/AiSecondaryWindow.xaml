@@ -1,0 +1,24 @@
+<Window x:Class="BrowserDemo.Views.AiSecondaryWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:views="clr-namespace:BrowserDemo.Views"
+        xmlns:local="clr-namespace:BrowserDemo"
+        mc:Ignorable="d"
+        Title="AI 助手"
+        Width="720" Height="640"
+        MinWidth="560" MaxWidth="1100"
+        WindowStyle="ToolWindow"
+        ResizeMode="CanResize"
+        ShowInTaskbar="False"
+        Topmost="False"
+        UseLayoutRounding="True"
+        TextOptions.TextFormattingMode="Display"
+        SnapsToDevicePixels="True">
+
+    <Grid Background="#1E1E22">
+        <views:AiChatPanel x:Name="AiPanel"
+                           DataContext="{Binding}"/>
+    </Grid>
+</Window>

@@ -1,0 +1,68 @@
+<Window x:Class="BrowserDemo.Views.DownloadsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="下载"
+        Height="420" Width="640"
+        WindowStartupLocation="CenterOwner"
+        Background="#1E1E22"
+        Foreground="#EEE"
+        FontFamily="Segoe UI"
+        ShowInTaskbar="False">
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <Grid Grid.Row="0" Margin="0,0,0,12">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Text="下载" Foreground="#EEE" FontSize="18" FontWeight="SemiBold" VerticalAlignment="Center"/>
+            <Button Grid.Column="1" Content="清空已完成" Click="ClearCompleted_Click"
+                    Background="#3A3A3E" BorderThickness="0"
+                    Foreground="#DDD" FontSize="12"
+                    Height="30" Padding="12,0" Cursor="Hand"/>
+        </Grid>
+
+        <Grid Grid.Row="1">
+            <ListView x:Name="DownloadsList" ItemsSource="{Binding}" Background="#202026"
+                      BorderBrush="#3A3A3E" Foreground="#EEE">
+                <ListView.View>
+                    <GridView>
+                        <GridViewColumn Header="文件名" Width="170" DisplayMemberBinding="{Binding FileName}"/>
+                        <GridViewColumn Header="大小" Width="110" DisplayMemberBinding="{Binding SizeText}"/>
+                        <GridViewColumn Header="状态" Width="70" DisplayMemberBinding="{Binding StateText}"/>
+                        <GridViewColumn Header="进度" Width="120">
+                            <GridViewColumn.CellTemplate>
+                                <DataTemplate>
+                                    <ProgressBar Width="95" Height="10" Value="{Binding ProgressPercent}"
+                                                 Foreground="#0078D4" Background="#3A3A3E"/>
+                                </DataTemplate>
+                            </GridViewColumn.CellTemplate>
+                        </GridViewColumn>
+                        <GridViewColumn Header="保存路径" Width="260" DisplayMemberBinding="{Binding ResultFilePath}"/>
+                    </GridView>
+                </ListView.View>
+            </ListView>
+
+            <TextBlock Text="暂无下载记录" Foreground="#777" FontSize="14"
+                       HorizontalAlignment="Center" VerticalAlignment="Center">
+                <TextBlock.Style>
+                    <Style TargetType="TextBlock">
+                        <Setter Property="Visibility" Value="Collapsed"/>
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding Count}" Value="0">
+                                <Setter Property="Visibility" Value="Visible"/>
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </TextBlock.Style>
+            </TextBlock>
+        </Grid>
+
+        <TextBlock Grid.Row="2" Text="下载记录仅在当前运行期间显示。" Foreground="#666" FontSize="11" Margin="0,10,0,0"/>
+    </Grid>
+</Window>

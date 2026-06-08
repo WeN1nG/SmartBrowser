@@ -1,0 +1,279 @@
+<Window x:Class="BrowserDemo.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:views="clr-namespace:BrowserDemo.Views"
+        xmlns:local="clr-namespace:BrowserDemo"
+        mc:Ignorable="d"
+        Title="SmartAI Browser Demo"
+        WindowStartupLocation="Manual"
+        Left="1562" Top="21"
+        Height="400" Width="340"
+        UseLayoutRounding="True"
+        TextOptions.TextFormattingMode="Display"
+        SnapsToDevicePixels="True">
+
+    <Window.Resources>
+        <!-- 标签页样式 -->
+        <Style x:Key="TabItemStyle" TargetType="Border">
+            <Setter Property="Background" Value="#2A2A2E"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="BorderBrush" Value="#3A3A3E"/>
+            <Setter Property="CornerRadius" Value="6,6,0,0"/>
+            <Setter Property="Margin" Value="0,0,2,0"/>
+            <Setter Property="Padding" Value="10,6,6,6"/>
+            <Setter Property="Height" Value="32"/>
+            <Setter Property="Cursor" Value="Hand"/>
+        </Style>
+
+        <Style x:Key="TabButtonStyle" TargetType="Button">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Foreground" Value="#999"/>
+            <Setter Property="Width" Value="24"/>
+            <Setter Property="Height" Value="24"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="BgBorder"
+                                Background="{TemplateBinding Background}"
+                                CornerRadius="3" Padding="2">
+                            <TextBlock Text="{TemplateBinding Content}"
+                                       HorizontalAlignment="Center"
+                                       VerticalAlignment="Center"
+                                       Foreground="{TemplateBinding Foreground}"
+                                       FontSize="12"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="BgBorder" Property="Background" Value="#C42B1C"/>
+                                <Setter Property="Foreground" Value="White"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <!-- 整体布局 -->
+    <Grid Background="#1E1E22">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>    <!-- 标签栏 -->
+            <RowDefinition Height="Auto"/>    <!-- 导航栏+进度条 -->
+            <RowDefinition Height="*"/>       <!-- 主内容区域 -->
+            <RowDefinition Height="Auto"/>    <!-- 状态栏 -->
+        </Grid.RowDefinitions>
+
+        <!-- ======== 标签栏 ======== -->
+        <Border Grid.Row="0" Background="#252529" Padding="6,4,6,0">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <!-- 标签列表 -->
+                <ScrollViewer Grid.Column="0" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Hidden">
+                    <ItemsControl x:Name="TabBarItems" ItemsSource="{Binding Tabs}">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <StackPanel Orientation="Horizontal"/>
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border Style="{StaticResource TabItemStyle}"
+                                        Background="{Binding IsActive, Converter={x:Static local:Converters.ActiveTabBgConverter}}"
+                                        BorderBrush="{Binding IsActive, Converter={x:Static local:Converters.ActiveTabBorderConverter}}">
+                                    <Border.InputBindings>
+                                        <MouseBinding MouseAction="LeftClick"
+                                                      Command="{Binding DataContext.ActivateTabCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                      CommandParameter="{Binding Id}"/>
+                                    </Border.InputBindings>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+
+                                        <!-- 加载动画 -->
+                                        <TextBlock Grid.Column="0" Text="◌" Foreground="#FFD700"
+                                                   Visibility="{Binding IsLoading, Converter={x:Static local:Converters.BoolToVisibilityConverter}}"
+                                                   FontSize="12" VerticalAlignment="Center" Margin="0,0,6,0"/>
+
+                                        <!-- 图标或标题 -->
+                                        <TextBlock Grid.Column="1"
+                                                   Text="{Binding Title}"
+                                                   Foreground="{Binding IsActive, Converter={x:Static local:Converters.ActiveTabTextConverter}}"
+                                                   FontSize="12" VerticalAlignment="Center"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   MaxWidth="160"/>
+
+                                        <!-- 关闭按钮 -->
+                                        <Button Grid.Column="2" Content="✕"
+                                                Style="{StaticResource TabButtonStyle}"
+                                                Command="{Binding DataContext.CloseTabCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                CommandParameter="{Binding Id}"
+                                                Margin="4,0,0,0"/>
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+
+                <!-- 下载按钮 -->
+                <Button Grid.Column="1" Content="⬇"
+                        Command="{Binding DownloadCommand}"
+                        Background="Transparent" BorderThickness="0"
+                        Foreground="#AAA" FontSize="18"
+                        Width="34" Height="28" Margin="4,0,0,4"
+                        Cursor="Hand"
+                        ToolTip="下载">
+                    <Button.Resources>
+                        <Style TargetType="Border">
+                            <Setter Property="CornerRadius" Value="4"/>
+                        </Style>
+                    </Button.Resources>
+                </Button>
+
+                <!-- 新建标签按钮 -->
+                <Button Grid.Column="2" Content="＋"
+                        Command="{Binding NewTabCommand}"
+                        Background="Transparent" BorderThickness="0"
+                        Foreground="#AAA" FontSize="18"
+                        Width="34" Height="28" Margin="4,0,0,4"
+                        Cursor="Hand"
+                        ToolTip="新建标签页 (Ctrl+T)">
+                    <Button.Resources>
+                        <Style TargetType="Border">
+                            <Setter Property="CornerRadius" Value="4"/>
+                        </Style>
+                    </Button.Resources>
+                </Button>
+
+                <!-- AI 助手副窗口切换按钮 -->
+                <Button Grid.Column="3" x:Name="AiToggleBtn"
+                        Content="{Binding Chat.ToggleLabel}"
+                        Command="{Binding Chat.TogglePanelCommand}"
+                        Background="#2C6E3C" BorderThickness="0"
+                        Foreground="White" FontSize="11"
+                        Height="26" Margin="4,0,0,4" Padding="8,0"
+                        Cursor="Hand"
+                        ToolTip="切换 AI 助手副窗口"/>
+            </Grid>
+        </Border>
+
+        <!-- ======== 导航栏 ======== -->
+        <Border Grid.Row="1" Background="#2A2A2E" Padding="8,6" BorderBrush="#3A3A3E" BorderThickness="0,0,0,1">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <!-- 后退 -->
+                <Button Grid.Column="0" Content="◀" Width="32" Height="30"
+                        Command="{Binding GoBackCommand}"
+                        IsEnabled="{Binding CanGoBack}"
+                        Background="Black" BorderThickness="0"
+                        Foreground="White" FontSize="13"
+                        Margin="0,0,4,0" Cursor="Hand"
+                        ToolTip="后退"/>
+
+                <!-- 前进 -->
+                <Button Grid.Column="1" Content="▶" Width="32" Height="30"
+                        Command="{Binding GoForwardCommand}"
+                        IsEnabled="{Binding CanGoForward}"
+                        Background="Black" BorderThickness="0"
+                        Foreground="White" FontSize="13"
+                        Margin="0,0,4,0" Cursor="Hand"
+                        ToolTip="前进"/>
+
+                <!-- 刷新 -->
+                <Button Grid.Column="2" Content="⟳" Width="32" Height="30"
+                        Command="{Binding RefreshCommand}"
+                        Background="Black" BorderThickness="0"
+                        Foreground="White" FontSize="16"
+                        Margin="0,0,8,0" Cursor="Hand"
+                        ToolTip="刷新 (F5)"/>
+
+                <!-- 地址栏 -->
+                <Border Grid.Column="3" Background="#1A1A1E" CornerRadius="4"
+                        BorderBrush="#4A4A4E" BorderThickness="1"
+                        Height="30" VerticalAlignment="Center">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+
+                        <TextBox x:Name="AddressBar" Grid.Column="0"
+                                 Text="{Binding AddressText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                 Background="Transparent" BorderThickness="0"
+                                 Foreground="#EEE" FontSize="13"
+                                 Padding="10,0,0,0" VerticalAlignment="Center"
+                                 FontFamily="Segoe UI"
+                                 KeyDown="AddressBar_KeyDown"/>
+
+                        <!-- 安全锁图标（示意） -->
+                        <TextBlock Grid.Column="1" Text="🔒" FontSize="11"
+                                   VerticalAlignment="Center" Margin="0,0,8,0"
+                                   Visibility="{Binding HasTabs, Converter={x:Static local:Converters.BoolToVisibilityConverter}}"/>
+                    </Grid>
+                </Border>
+
+                <!-- 转到按钮 -->
+                <Button Grid.Column="4" Content="转到" Width="50" Height="30"
+                        Command="{Binding NavigateCommand}"
+                        Background="#0078D4" BorderThickness="0"
+                        Foreground="White" FontSize="12"
+                        Margin="6,0,0,0" Cursor="Hand"
+                        ToolTip="转到此地址">
+                    <Button.Resources>
+                        <Style TargetType="Border">
+                            <Setter Property="CornerRadius" Value="4"/>
+                        </Style>
+                    </Button.Resources>
+                </Button>
+            </Grid>
+        </Border>
+
+        <!-- 加载进度条 -->
+        <ProgressBar x:Name="LoadingBar" Grid.Row="1" Height="2"
+                     IsIndeterminate="False" Value="0"
+                     Foreground="#0078D4" Background="Transparent"
+                     VerticalAlignment="Bottom"
+                     Visibility="Collapsed"/>
+
+        <!-- ======== 主内容：浏览器全屏 ======== -->
+        <Grid x:Name="ContentArea" Grid.Row="2" Background="#1E1E22"/>
+
+        <!-- ======== 状态栏 ======== -->
+        <Border Grid.Row="3" Background="#252529" Padding="10,3" BorderBrush="#3A3A3E" BorderThickness="0,1,0,0">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBlock Grid.Column="0" Text="{Binding StatusText}"
+                           Foreground="#999" FontSize="11"/>
+
+                <TextBlock Grid.Column="2" x:Name="TabCountText"
+                           Foreground="#777" FontSize="11"
+                           HorizontalAlignment="Right"/>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

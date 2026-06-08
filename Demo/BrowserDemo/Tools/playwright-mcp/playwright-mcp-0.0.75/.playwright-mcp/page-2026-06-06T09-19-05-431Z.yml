@@ -1,0 +1,456 @@
+- generic [ref=e3]:
+  - main [ref=e16]:
+    - generic [ref=e17]:
+      - generic [ref=e18]:
+        - heading "必应" [level=1] [ref=e19]:
+          - img "必应" [ref=e20] [cursor=pointer]
+        - navigation [ref=e28]:
+          - menubar [ref=e29]:
+            - menuitem "图片" [ref=e30] [cursor=pointer]:
+              - link "图片" [ref=e31]:
+                - /url: /images?FORM=Z9LH
+            - menuitem "视频" [ref=e32] [cursor=pointer]:
+              - link "视频" [ref=e33]:
+                - /url: /videos?FORM=Z9LH1
+            - menuitem "翻译" [ref=e34] [cursor=pointer]:
+              - link "翻译" [ref=e35]:
+                - /url: /search?q=%E5%BF%85%E5%BA%94%E7%BF%BB%E8%AF%91&FORM=TTAHP1
+            - menuitem "地图" [ref=e36] [cursor=pointer]:
+              - link "地图" [ref=e37]:
+                - /url: /maps?FORM=Z9LH2
+            - menuitem "学术" [ref=e38] [cursor=pointer]:
+              - link "学术" [ref=e39]:
+                - /url: /academic?FORM=Z9LHS3
+            - menuitem ". . . 更多" [ref=e40] [cursor=pointer]:
+              - text: . . .
+              - button "更多" [ref=e41]
+      - complementary "帐户奖励和偏好设置" [ref=e44]:
+        - link "登录 登录" [ref=e45] [cursor=pointer]:
+          - /url: javascript:void(0)
+          - generic [ref=e46]: 登录
+          - generic "登录" [ref=e47]
+        - button "Microsoft Rewards" [ref=e48] [cursor=pointer]:
+          - generic [ref=e50]:
+            - generic [ref=e51]: Rewards
+            - img [ref=e53]
+        - button "设置和快速链接" [ref=e58] [cursor=pointer]
+        - button "下载必应 App" [ref=e59] [cursor=pointer]
+        - generic [ref=e60]:
+          - img "关闭" [ref=e61] [cursor=pointer]
+          - img "二维码" [ref=e62]
+          - generic [ref=e63]: 扫码下载 微软必应手机版
+          - generic [ref=e64]: 全球资源，有求必应
+    - generic [ref=e65]:
+      - generic [ref=e66]:
+        - generic [ref=e67]: 国内版
+        - generic [ref=e68] [cursor=pointer]: 国际版
+      - generic [ref=e69]:
+        - generic "输入搜索词" [ref=e70]:
+          - searchbox "输入搜索词" [active] [ref=e71]:
+            - status [ref=e73]
+          - generic: 各地运用多种科技严防作弊
+        - button "Search using voice" [ref=e75] [cursor=pointer]:
+          - img [ref=e76]
+        - button "Search"
+        - generic "搜索网页" [ref=e79] [cursor=pointer]:
+          - img [ref=e80]
+        - generic "必应上的热点" [ref=e85]:
+          - generic [ref=e86]:
+            - link "必应上的热点" [ref=e87] [cursor=pointer]:
+              - /url: /search?q=必应上的热点&form=HPNN01
+            - button "换一批" [ref=e88] [cursor=pointer]:
+              - img [ref=e89]
+              - generic [ref=e91]: 换一批
+          - list [ref=e94]:
+            - link "1 各地运用多种科技严防作弊" [ref=e95] [cursor=pointer]:
+              - /url: /search?q=%e5%90%84%e5%9c%b0%e8%bf%90%e7%94%a8%e5%a4%9a%e7%a7%8d%e7%a7%91%e6%8a%80%e4%b8%a5%e9%98%b2%e4%bd%9c%e5%bc%8a&efirst=0&ecount=50&filters=tnTID%3a%22DSBOS_0E166D50EBAA4095B27646D44A4A2235%22+tnVersion%3a%22028e0337bed844d3acb0fbecab3a554f%22+Segment%3a%22popularnow.carousel%22+tnCol%3a%220%22+tnOrder%3a%226babe957-e9d8-45f3-afed-a7446dc02eff%22&form=HPNN01
+              - generic [ref=e96]: "1"
+              - text: 各地运用多种科技严防作弊
+              - img [ref=e98]
+            - link "2 新疆的草上缀满知了猴" [ref=e101] [cursor=pointer]:
+              - /url: /search?q=%e6%96%b0%e7%96%86%e7%9a%84%e8%8d%89%e4%b8%8a%e7%bc%80%e6%bb%a1%e7%9f%a5%e4%ba%86%e7%8c%b4&efirst=0&ecount=50&filters=tnTID%3a%22DSBOS_ADA33287C0544A5A9CB99F1E3BA5D9A3%22+tnVersion%3a%22028e0337bed844d3acb0fbecab3a554f%22+Segment%3a%22popularnow.carousel%22+tnCol%3a%221%22+tnOrder%3a%226babe957-e9d8-45f3-afed-a7446dc02eff%22&form=HPNN01
+              - generic [ref=e102]: "2"
+              - text: 新疆的草上缀满知了猴
+            - link "3 酒店推985元两晚211元考生餐" [ref=e103] [cursor=pointer]:
+              - /url: /search?q=%e9%85%92%e5%ba%97%e6%8e%a8985%e5%85%83%e4%b8%a4%e6%99%9a211%e5%85%83%e8%80%83%e7%94%9f%e9%a4%90&efirst=0&ecount=50&filters=tnTID%3a%22DSBOS_A6A4EBCBCAB54F9FBA44AC9DDE676A13%22+tnVersion%3a%22028e0337bed844d3acb0fbecab3a554f%22+Segment%3a%22popularnow.carousel%22+tnCol%3a%222%22+tnOrder%3a%226babe957-e9d8-45f3-afed-a7446dc02eff%22&form=HPNN01
+              - generic [ref=e104]: "3"
+              - text: 酒店推985元两晚211元考生餐
+            - link "4 深圳近海区域出现“水龙卷”" [ref=e105] [cursor=pointer]:
+              - /url: /search?q=%e6%b7%b1%e5%9c%b3%e8%bf%91%e6%b5%b7%e5%8c%ba%e5%9f%9f%e5%87%ba%e7%8e%b0%e2%80%9c%e6%b0%b4%e9%be%99%e5%8d%b7%e2%80%9d&efirst=0&ecount=50&filters=tnTID%3a%22DSBOS_406D328E899948E2A65C6A386E623208%22+tnVersion%3a%22028e0337bed844d3acb0fbecab3a554f%22+Segment%3a%22popularnow.carousel%22+tnCol%3a%223%22+tnOrder%3a%226babe957-e9d8-45f3-afed-a7446dc02eff%22&form=HPNN01
+              - generic [ref=e106]: "4"
+              - text: 深圳近海区域出现“水龙卷”
+            - link "5 误把“蒙汗药”植物当菠菜吃" [ref=e107] [cursor=pointer]:
+              - /url: /search?q=%e8%af%af%e6%8a%8a%e2%80%9c%e8%92%99%e6%b1%97%e8%8d%af%e2%80%9d%e6%a4%8d%e7%89%a9%e5%bd%93%e8%8f%a0%e8%8f%9c%e5%90%83&efirst=0&ecount=50&filters=tnTID%3a%22DSBOS_92FC17032CE24468B0EAFCBA52C0133E%22+tnVersion%3a%22028e0337bed844d3acb0fbecab3a554f%22+Segment%3a%22popularnow.carousel%22+tnCol%3a%224%22+tnOrder%3a%226babe957-e9d8-45f3-afed-a7446dc02eff%22&form=HPNN01
+              - generic [ref=e108]: "5"
+              - text: 误把“蒙汗药”植物当菠菜吃
+            - link "6 湖南卫视《歌手》发更正声明" [ref=e109] [cursor=pointer]:
+              - /url: /search?q=%e6%b9%96%e5%8d%97%e5%8d%ab%e8%a7%86%e3%80%8a%e6%ad%8c%e6%89%8b%e3%80%8b%e5%8f%91%e6%9b%b4%e6%ad%a3%e5%a3%b0%e6%98%8e&efirst=0&ecount=50&filters=tnTID%3a%22DSBOS_5890B3828FF84F4E9DE02272B23ECADF%22+tnVersion%3a%22028e0337bed844d3acb0fbecab3a554f%22+Segment%3a%22popularnow.carousel%22+tnCol%3a%225%22+tnOrder%3a%226babe957-e9d8-45f3-afed-a7446dc02eff%22&form=HPNN01
+              - generic [ref=e110]: "6"
+              - text: 湖南卫视《歌手》发更正声明
+  - generic [ref=e113]:
+    - generic [ref=e114]:
+      - dialog "必应主页测验 几个世纪前，最早使用纳奇兹小道的是哪个族群？" [ref=e116]:
+        - group "必应主页测验 几个世纪前，最早使用纳奇兹小道的是哪个族群？" [ref=e117]:
+          - generic [ref=e118]: 必应主页测验
+          - generic [ref=e119]: 几个世纪前，最早使用纳奇兹小道的是哪个族群？
+          - list [ref=e120]:
+            - listitem [ref=e121]:
+              - 'link "答案: A，先锋, 1 of 3" [ref=e122] [cursor=pointer]':
+                - /url: /search?q=%E7%BE%8E%E6%B4%B2%E5%8E%9F%E4%BD%8F%E6%B0%91&filters=mgzv3configlist%3A%22BingQA_Quiz_layout%22+IsConversation%3A%22True%22+btrequestsource%3A%22homepage%22+WQOskey%3A%22HPQuiz_20260606_HikingNatchez%22+WQId%3A%221%22+WQQI%3A%220%22+WQCI%3A%220%22+UserChoices%3A%220%22+ShowTimesTaskPaneTrigger%3A%22false%22+WQSCORE%3A%220%22&FORM=HPQUIZ美洲原住民
+                - generic [ref=e123]: A
+                - text: 先锋
+            - listitem [ref=e124]:
+              - 'link "答案: B，美洲原住民, 2 of 3" [ref=e125] [cursor=pointer]':
+                - /url: /search?q=%E7%BE%8E%E6%B4%B2%E5%8E%9F%E4%BD%8F%E6%B0%91&filters=mgzv3configlist%3A%22BingQA_Quiz_layout%22+IsConversation%3A%22True%22+btrequestsource%3A%22homepage%22+WQOskey%3A%22HPQuiz_20260606_HikingNatchez%22+WQId%3A%221%22+WQQI%3A%220%22+WQCI%3A%221%22+UserChoices%3A%221%22+ShowTimesTaskPaneTrigger%3A%22false%22+WQSCORE%3A%221%22&FORM=HPQUIZ美洲原住民
+                - generic [ref=e126]: B
+                - text: 美洲原住民
+            - listitem [ref=e127]:
+              - 'link "答案: C，淘金者, 3 of 3" [ref=e128] [cursor=pointer]':
+                - /url: /search?q=%E7%BE%8E%E6%B4%B2%E5%8E%9F%E4%BD%8F%E6%B0%91&filters=mgzv3configlist%3A%22BingQA_Quiz_layout%22+IsConversation%3A%22True%22+btrequestsource%3A%22homepage%22+WQOskey%3A%22HPQuiz_20260606_HikingNatchez%22+WQId%3A%221%22+WQQI%3A%220%22+WQCI%3A%222%22+UserChoices%3A%222%22+ShowTimesTaskPaneTrigger%3A%22false%22+WQSCORE%3A%220%22&FORM=HPQUIZ美洲原住民
+                - generic [ref=e129]: C
+                - text: 淘金者
+      - generic [ref=e130]:
+        - generic:
+          - generic:
+            - link "获取新版必应壁纸应用":
+              - /url: https://go.microsoft.com/fwlink/?linkid=2127455
+              - generic: 获取新版必应壁纸应用
+          - 'heading "每日一图: 纳奇兹小径公园大道, 图珀洛, 密西西比州, 美国" [level=3]':
+            - 'link "每日一图: 纳奇兹小径公园大道, 图珀洛, 密西西比州, 美国"':
+              - /url: /search?q=%e7%ba%b3%e5%a5%87%e5%85%b9%e5%b0%8f%e5%be%84%e6%97%a5%e5%87%ba%e6%ad%a5%e9%81%93&form=hpcapt&filters=HpDate:"20260605_1600"+mgzv3configlist:"BingQA_Encyclopedia_Layout"
+              - text: 纳奇兹小径公园大道, 图珀洛, 密西西比州, 美国
+          - generic:
+            - generic: © The best photo is earned/Getty Images Plus
+            - list:
+              - listitem:
+                - button "下载今日美图。仅限用作桌面壁纸。"
+        - generic [ref=e131]:
+          - link "多走走，多思考" [ref=e133] [cursor=pointer]:
+            - /url: /search?q=%e7%ba%b3%e5%a5%87%e5%85%b9%e5%b0%8f%e5%be%84%e6%97%a5%e5%87%ba%e6%ad%a5%e9%81%93&form=hpcapt&filters=HpDate:"20260605_1600"+mgzv3configlist:"BingQA_Encyclopedia_Layout"
+            - img [ref=e135]
+            - heading "多走走，多思考" [level=2] [ref=e138]
+          - generic [ref=e139] [cursor=pointer]:
+            - status [ref=e140]
+            - button "上一个图像" [ref=e141]
+            - button "下一个图像" [disabled] [ref=e143]
+    - button "反馈" [ref=e145] [cursor=pointer]:
+      - img [ref=e146]
+      - generic: 反馈
+    - complementary [ref=e149]:
+      - generic [ref=e151]:
+        - generic [ref=e152]: 发现
+        - main [ref=e159]:
+          - generic [ref=e162]:
+            - generic [ref=e165]:
+              - tablist [ref=e167]:
+                - tab [selected] [ref=e168] [cursor=pointer]
+                - tab [ref=e170] [cursor=pointer]
+                - tab [ref=e172] [cursor=pointer]
+                - tab [ref=e174] [cursor=pointer]
+                - tab [ref=e176] [cursor=pointer]
+                - tab [ref=e178] [cursor=pointer]
+                - tab [ref=e180] [cursor=pointer]
+                - tab [ref=e182] [cursor=pointer]
+                - tab [ref=e184] [cursor=pointer]
+                - tab [ref=e186] [cursor=pointer]
+                - tab [ref=e188] [cursor=pointer]
+                - tab [ref=e190] [cursor=pointer]
+                - tab [ref=e192] [cursor=pointer]
+              - button [ref=e196]
+              - button [ref=e199]
+              - article [ref=e202]:
+                - generic [ref=e203]:
+                  - img [ref=e204]
+                  - generic [ref=e206]:
+                    - generic [ref=e207]:
+                      - img "一点资讯" [ref=e208]
+                      - generic [ref=e209]:
+                        - generic:
+                          - generic "一点资讯" [ref=e210]
+                          - generic [ref=e211]: ·
+                          - generic [ref=e212]: 1 天
+                    - link "钱再多有什么用! 千万网红董赤赤断更5个月后，再出现时面相大变" [ref=e213] [cursor=pointer]:
+                      - /url: https://www.msn.cn/zh-cn/news/other/%E9%92%B1%E5%86%8D%E5%A4%9A%E6%9C%89%E4%BB%80%E4%B9%88%E7%94%A8-%E5%8D%83%E4%B8%87%E7%BD%91%E7%BA%A2%E8%91%A3%E8%B5%A4%E8%B5%A4%E6%96%AD%E6%9B%B45%E4%B8%AA%E6%9C%88%E5%90%8E-%E5%86%8D%E5%87%BA%E7%8E%B0%E6%97%B6%E9%9D%A2%E7%9B%B8%E5%A4%A7%E5%8F%98/ar-AA24U3wm
+                      - heading "钱再多有什么用! 千万网红董赤赤断更5个月后，再出现时面相大变" [level=2] [ref=e214]:
+                        - generic: 钱再多有什么用! 千万网红董赤赤断更5个月后，再出现时面相大变
+                  - generic "钱再多有什么用! 千万网红董赤赤断更5个月后，再出现时面相大变" [ref=e218]:
+                    - generic [ref=e221]:
+                      - button "48 赞" [ref=e222] [cursor=pointer]:
+                        - generic [ref=e223]:
+                          - img [ref=e224]
+                          - generic [ref=e226]: "48"
+                      - button "不喜欢" [ref=e227] [cursor=pointer]:
+                        - img [ref=e229]
+                  - generic [ref=e232]:
+                    - generic:
+                      - button "隐藏此报道" [ref=e233] [cursor=pointer]:
+                        - img [ref=e234]
+                        - text: 隐藏此报道
+                      - button "查看更多" [ref=e236] [cursor=pointer]:
+                        - img [ref=e237]
+            - article "魏宗万去世，龙套跑了20年，讣告细节令人窝心" [ref=e238] [cursor=pointer]:
+              - generic [ref=e240]:
+                - img [ref=e241]
+                - generic [ref=e242]:
+                  - generic [ref=e243]:
+                    - generic [ref=e244]:
+                      - generic [ref=e245]:
+                        - img [ref=e246]
+                        - generic [ref=e247]: 娱乐扒客
+                      - generic [ref=e248]: ·
+                      - generic [ref=e249]: 2 天
+                    - link "魏宗万去世，龙套跑了20年，讣告细节令人窝心, 娱乐扒客" [ref=e250]:
+                      - /url: https://www.msn.cn/zh-cn/news/other/%E9%AD%8F%E5%AE%97%E4%B8%87%E5%8E%BB%E4%B8%96-%E9%BE%99%E5%A5%97%E8%B7%91%E4%BA%8620%E5%B9%B4-%E8%AE%A3%E5%91%8A%E7%BB%86%E8%8A%82%E4%BB%A4%E4%BA%BA%E7%AA%9D%E5%BF%83/ar-AA24Ns7S
+                      - text: 魏宗万去世，龙套跑了20年，讣告细节令人窝心
+                  - generic "魏宗万去世，龙套跑了20年，讣告细节令人窝心" [ref=e254]:
+                    - generic [ref=e257]:
+                      - button "171 赞" [ref=e258]:
+                        - generic [ref=e259]:
+                          - img [ref=e260]
+                          - generic [ref=e262]: "171"
+                      - button "不喜欢" [ref=e263]:
+                        - img [ref=e265]
+                - generic [ref=e267]:
+                  - button "隐藏此报道" [ref=e268]:
+                    - img [ref=e269]
+                    - text: 隐藏此报道
+                  - button "查看更多" [ref=e270]:
+                    - img [ref=e271]
+            - article "【我的世界】三角洲空岛生存1～2集! 我的世界 三角洲行动 我的世界生存 随机空岛生存" [ref=e272] [cursor=pointer]:
+              - generic [ref=e274]:
+                - img [ref=e276]
+                - generic [ref=e280]:
+                  - generic [ref=e281]:
+                    - generic [ref=e283]:
+                      - img [ref=e284]
+                      - generic [ref=e285]: 一点资讯-视频/暴雪玩家gYz
+                    - link "【我的世界】三角洲空岛生存1～2集! 我的世界 三角洲行动 我的世界生存 随机空岛生存, 一点资讯-视频/暴雪玩家gYz" [ref=e286]:
+                      - /url: https://msn.yidianzixun.com/zh-cn/video/webcontent/web-content/vi-AA1W9fyf?vid=vi-AA1W9fyf&scope=web&FORM=QBLH&providerId=AA1JHler&ocid=BingHp01
+                      - text: 【我的世界】三角洲空岛生存1～2集! 我的世界 三角洲行动 我的世界生存 随机空岛生存
+                  - generic "【我的世界】三角洲空岛生存1～2集! 我的世界 三角洲行动 我的世界生存 随机空岛生存" [ref=e290]:
+                    - generic [ref=e293]:
+                      - button "3 千 赞" [ref=e294]:
+                        - generic [ref=e295]:
+                          - img [ref=e296]
+                          - generic [ref=e298]: 3 千
+                      - button "不喜欢" [ref=e299]:
+                        - img [ref=e301]
+                - generic [ref=e303]:
+                  - button "隐藏此报道" [ref=e304]:
+                    - img [ref=e305]
+                    - text: 隐藏此报道
+                  - button "查看更多" [ref=e306]:
+                    - img [ref=e307]
+            - article [ref=e308] [cursor=pointer]:
+              - generic [ref=e314]:
+                - generic [ref=e316]:
+                  - img "自选股建议" [ref=e318]
+                  - link "自选股建议" [ref=e319]:
+                    - /url: https://www.msn.cn/zh-cn/money/watchlist?ocid=BingHp01
+                    - heading "自选股建议" [level=2] [ref=e320]
+                  - button "更多选项" [ref=e322]
+                - generic [ref=e327]:
+                  - link "深证成指 399001 ‎-2.21%‎ 15,314.70" [ref=e329]:
+                    - /url: https://www.msn.cn/zh-cn/money/watchlist?id=adg1m7&ocid=BingHp01
+                    - generic [ref=e330]:
+                      - generic [ref=e332]: 深证成指
+                      - generic [ref=e334]: "399001"
+                    - generic [ref=e337]:
+                      - generic [ref=e338]: ‎-2.21%‎
+                      - generic [ref=e339]: 15,314.70
+                    - button "添加到自选股" [ref=e342]:
+                      - img [ref=e343]
+                  - link "富时中国A50 XIN9 ‎-1.62%‎ 15,621.37" [ref=e347]:
+                    - /url: https://www.msn.cn/zh-cn/money/watchlist?id=aopzxm&ocid=BingHp01
+                    - generic [ref=e348]:
+                      - generic [ref=e350]: 富时中国A50
+                      - generic [ref=e352]: XIN9
+                    - generic [ref=e355]:
+                      - generic [ref=e356]: ‎-1.62%‎
+                      - generic [ref=e357]: 15,621.37
+                    - button "添加到自选股" [ref=e360]:
+                      - img [ref=e361]
+                  - link "EUR/CNY 欧元/人民币 ‎-0.89%‎ 7.7932" [ref=e365]:
+                    - /url: https://www.msn.cn/zh-cn/money/watchlist?id=av8u5r&ocid=BingHp01
+                    - generic [ref=e366]:
+                      - generic [ref=e368]: EUR/CNY
+                      - generic [ref=e370]: 欧元/人民币
+                    - generic [ref=e373]:
+                      - generic [ref=e374]: ‎-0.89%‎
+                      - generic [ref=e375]: "7.7932"
+                    - button "添加到自选股" [ref=e378]:
+                      - img [ref=e379]
+                  - link "黄金 Gold ‎-3.10%‎ 4,365.30" [ref=e383]:
+                    - /url: https://www.msn.cn/zh-cn/money/watchlist?id=auvwoc&ocid=BingHp01
+                    - generic [ref=e384]:
+                      - generic [ref=e386]: 黄金
+                      - generic [ref=e388]: Gold
+                    - generic [ref=e391]:
+                      - generic [ref=e392]: ‎-3.10%‎
+                      - generic [ref=e393]: 4,365.30
+                    - button "添加到自选股" [ref=e396]:
+                      - img [ref=e397]
+                  - link "英伟达 NVDA ‎-6.20%‎ 205.10" [ref=e401]:
+                    - /url: https://www.msn.cn/zh-cn/money/watchlist?id=a1yv52&ocid=BingHp01
+                    - generic [ref=e402]:
+                      - generic [ref=e404]: 英伟达
+                      - generic [ref=e406]: NVDA
+                    - generic [ref=e409]:
+                      - generic [ref=e410]: ‎-6.20%‎
+                      - generic [ref=e411]: "205.10"
+                    - button "添加到自选股" [ref=e414]:
+                      - img [ref=e415]
+                - generic [ref=e419]:
+                  - generic [ref=e420]:
+                    - generic "上一页" [ref=e421]:
+                      - button "上一页" [ref=e422]
+                    - tablist [ref=e424]:
+                      - tab "tab-0" [selected] [ref=e425]
+                      - tab "tab-1" [ref=e427]
+                      - tab "tab-2" [ref=e429]
+                    - generic "下一页" [ref=e431]:
+                      - button "下一页" [ref=e432]
+                  - link "查看自选股建议" [ref=e434]:
+                    - /url: https://www.msn.cn/zh-cn/money/watchlist?ocid=BingHp01
+            - article "科学家研究20年沙漠绿化，烧掉100亿都没成! 结果放了500只乌龟，翻盘了" [ref=e435] [cursor=pointer]:
+              - generic [ref=e437]:
+                - img [ref=e438]
+                - generic [ref=e439]:
+                  - generic [ref=e440]:
+                    - generic [ref=e441]:
+                      - generic [ref=e442]:
+                        - img [ref=e443]
+                        - generic [ref=e444]: 一点资讯
+                      - generic [ref=e445]: ·
+                      - generic [ref=e446]: 1 周
+                    - link "科学家研究20年沙漠绿化，烧掉100亿都没成! 结果放了500只乌龟，翻盘了, 一点资讯" [ref=e447]:
+                      - /url: https://www.msn.cn/zh-cn/news/other/%E7%A7%91%E5%AD%A6%E5%AE%B6%E7%A0%94%E7%A9%B620%E5%B9%B4%E6%B2%99%E6%BC%A0%E7%BB%BF%E5%8C%96-%E7%83%A7%E6%8E%89100%E4%BA%BF%E9%83%BD%E6%B2%A1%E6%88%90-%E7%BB%93%E6%9E%9C%E6%94%BE%E4%BA%86500%E5%8F%AA%E4%B9%8C%E9%BE%9F-%E7%BF%BB%E7%9B%98%E4%BA%86/ar-AA24chg5
+                      - text: 科学家研究20年沙漠绿化，烧掉100亿都没成! 结果放了500只乌龟，翻盘了
+                  - generic "科学家研究20年沙漠绿化，烧掉100亿都没成! 结果放了500只乌龟，翻盘了" [ref=e451]:
+                    - generic [ref=e454]:
+                      - button "59 赞" [ref=e455]:
+                        - generic [ref=e456]:
+                          - img [ref=e457]
+                          - generic [ref=e459]: "59"
+                      - button "不喜欢" [ref=e460]:
+                        - img [ref=e462]
+                - generic [ref=e464]:
+                  - button "隐藏此报道" [ref=e465]:
+                    - img [ref=e466]
+                    - text: 隐藏此报道
+                  - button "查看更多" [ref=e467]:
+                    - img [ref=e468]
+            - article "马思纯直面身材非议：丰满是我的优势，如今状态满意到头了" [ref=e469] [cursor=pointer]:
+              - generic [ref=e471]:
+                - img [ref=e472]
+                - generic [ref=e473]:
+                  - generic [ref=e474]:
+                    - generic [ref=e475]:
+                      - generic [ref=e476]:
+                        - img [ref=e477]
+                        - generic [ref=e478]: 南方娱乐网
+                      - generic [ref=e479]: ·
+                      - generic [ref=e480]: 2 天
+                    - link "马思纯直面身材非议：丰满是我的优势，如今状态满意到头了, 南方娱乐网" [ref=e481]:
+                      - /url: https://www.msn.cn/zh-cn/news/other/%E9%A9%AC%E6%80%9D%E7%BA%AF%E7%9B%B4%E9%9D%A2%E8%BA%AB%E6%9D%90%E9%9D%9E%E8%AE%AE-%E4%B8%B0%E6%BB%A1%E6%98%AF%E6%88%91%E7%9A%84%E4%BC%98%E5%8A%BF-%E5%A6%82%E4%BB%8A%E7%8A%B6%E6%80%81%E6%BB%A1%E6%84%8F%E5%88%B0%E5%A4%B4%E4%BA%86/ar-AA24InEm
+                      - text: 马思纯直面身材非议：丰满是我的优势，如今状态满意到头了
+                  - generic "马思纯直面身材非议：丰满是我的优势，如今状态满意到头了" [ref=e485]:
+                    - generic [ref=e488]:
+                      - button "186 赞" [ref=e489]:
+                        - generic [ref=e490]:
+                          - img [ref=e491]
+                          - generic [ref=e493]: "186"
+                      - button "不喜欢" [ref=e494]:
+                        - img [ref=e496]
+                - generic [ref=e498]:
+                  - button "隐藏此报道" [ref=e499]:
+                    - img [ref=e500]
+                    - text: 隐藏此报道
+                  - button "查看更多" [ref=e501]:
+                    - img [ref=e502]
+            - article "鸡蛋包装成印钞机 3419元入会拉人头 老人养老钱全被骗" [ref=e503] [cursor=pointer]:
+              - generic [ref=e505]:
+                - img [ref=e506]
+                - generic [ref=e507]:
+                  - generic [ref=e508]:
+                    - generic [ref=e509]:
+                      - generic [ref=e510]:
+                        - img [ref=e511]
+                        - generic [ref=e512]: 北京话匣子
+                      - generic [ref=e513]: ·
+                      - generic [ref=e514]: 2 小时
+                    - link "鸡蛋包装成印钞机 3419元入会拉人头 老人养老钱全被骗, 北京话匣子" [ref=e515]:
+                      - /url: https://www.msn.cn/zh-cn/news/other/%E9%B8%A1%E8%9B%8B%E5%8C%85%E8%A3%85%E6%88%90%E5%8D%B0%E9%92%9E%E6%9C%BA-3419%E5%85%83%E5%85%A5%E4%BC%9A%E6%8B%89%E4%BA%BA%E5%A4%B4-%E8%80%81%E4%BA%BA%E5%85%BB%E8%80%81%E9%92%B1%E5%85%A8%E8%A2%AB%E9%AA%97/ar-AA24Y6J0
+                      - text: 鸡蛋包装成印钞机 3419元入会拉人头 老人养老钱全被骗
+                  - generic "鸡蛋包装成印钞机 3419元入会拉人头 老人养老钱全被骗" [ref=e519]:
+                    - generic [ref=e522]:
+                      - button "赞" [ref=e523]:
+                        - img [ref=e525]
+                      - button "不喜欢" [ref=e527]:
+                        - img [ref=e529]
+                - generic [ref=e531]:
+                  - button "隐藏此报道" [ref=e532]:
+                    - img [ref=e533]
+                    - text: 隐藏此报道
+                  - button "查看更多" [ref=e534]:
+                    - img [ref=e535]
+            - article "离婚不离家?陈妍希晒9岁儿子照片，依旧给孩子完整的爱" [ref=e536] [cursor=pointer]:
+              - generic [ref=e538]:
+                - img [ref=e539]
+                - generic [ref=e540]:
+                  - generic [ref=e541]:
+                    - generic [ref=e542]:
+                      - generic [ref=e543]:
+                        - img [ref=e544]
+                        - generic [ref=e545]: 南方娱乐网
+                      - generic [ref=e546]: ·
+                      - generic [ref=e547]: 3 天
+                    - link "离婚不离家?陈妍希晒9岁儿子照片，依旧给孩子完整的爱, 南方娱乐网" [ref=e548]:
+                      - /url: https://www.msn.cn/zh-cn/news/other/%E7%A6%BB%E5%A9%9A%E4%B8%8D%E7%A6%BB%E5%AE%B6-%E9%99%88%E5%A6%8D%E5%B8%8C%E6%99%929%E5%B2%81%E5%84%BF%E5%AD%90%E7%85%A7%E7%89%87-%E4%BE%9D%E6%97%A7%E7%BB%99%E5%AD%A9%E5%AD%90%E5%AE%8C%E6%95%B4%E7%9A%84%E7%88%B1/ar-AA24HD0a
+                      - text: 离婚不离家?陈妍希晒9岁儿子照片，依旧给孩子完整的爱
+                  - generic "离婚不离家?陈妍希晒9岁儿子照片，依旧给孩子完整的爱" [ref=e552]:
+                    - generic [ref=e555]:
+                      - button "117 赞" [ref=e556]:
+                        - generic [ref=e557]:
+                          - img [ref=e558]
+                          - generic [ref=e560]: "117"
+                      - button "不喜欢" [ref=e561]:
+                        - img [ref=e563]
+                - generic [ref=e565]:
+                  - button "隐藏此报道" [ref=e566]:
+                    - img [ref=e567]
+                    - text: 隐藏此报道
+                  - button "查看更多" [ref=e568]:
+                    - img [ref=e569]
+            - article [ref=e570] [cursor=pointer]
+    - contentinfo:
+      - generic [ref=e573]:
+        - generic [ref=e574]: © 2026 Microsoft
+        - list [ref=e575]:
+          - listitem [ref=e576]:
+            - link "增值电信业务经营许可证：合字B2-20090007" [ref=e577] [cursor=pointer]:
+              - /url: https://dxzhgl.miit.gov.cn/dxxzsp/xkz/xkzgl/resource/qiyereport.jsp?num=caf04fa4-bd8a-4d9e-80b6-2aa1b86c1509&type=yreport
+          - listitem [ref=e578]:
+            - link "京ICP备10036305号-7" [ref=e579] [cursor=pointer]:
+              - /url: https://beian.miit.gov.cn
+          - listitem [ref=e580]:
+            - link "京公网安备11010802047360号" [ref=e581] [cursor=pointer]:
+              - /url: https://beian.mps.gov.cn/#/query/webSearch?code=11010802047360
+          - listitem [ref=e582]:
+            - link "隐私与 Cookie" [ref=e583] [cursor=pointer]:
+              - /url: //go.microsoft.com/fwlink/?LinkId=521839
+          - listitem [ref=e584]:
+            - link "法律声明" [ref=e585] [cursor=pointer]:
+              - /url: //go.microsoft.com/fwlink/?LinkID=246338
+          - listitem [ref=e586]:
+            - link "广告" [ref=e587] [cursor=pointer]:
+              - /url: //go.microsoft.com/fwlink/?linkid=868923
+          - listitem [ref=e588]:
+            - link "关于我们的广告" [ref=e589] [cursor=pointer]:
+              - /url: //go.microsoft.com/fwlink/?LinkID=286759
+          - listitem [ref=e590]:
+            - link "帮助" [ref=e591] [cursor=pointer]:
+              - /url: //support.microsoft.com/topic/82d20721-2d6f-4012-a13d-d1910ccf203f
+          - listitem [ref=e592]:
+            - link "反馈" [ref=e593] [cursor=pointer]:
+              - /url: "#"

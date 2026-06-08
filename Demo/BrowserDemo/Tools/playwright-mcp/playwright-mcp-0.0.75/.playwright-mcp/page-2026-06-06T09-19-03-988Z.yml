@@ -1,0 +1,98 @@
+- generic [ref=e3]:
+  - main [ref=e16]:
+    - generic [ref=e18]:
+      - heading "必应" [level=1] [ref=e19]:
+        - img "必应" [ref=e20] [cursor=pointer]
+      - navigation [ref=e28]:
+        - menubar [ref=e29]:
+          - menuitem "图片" [ref=e30] [cursor=pointer]:
+            - link "图片" [ref=e31]:
+              - /url: /images?FORM=Z9LH
+          - menuitem "视频" [ref=e32] [cursor=pointer]:
+            - link "视频" [ref=e33]:
+              - /url: /videos?FORM=Z9LH1
+          - menuitem "翻译" [ref=e34] [cursor=pointer]:
+            - link "翻译" [ref=e35]:
+              - /url: /search?q=%E5%BF%85%E5%BA%94%E7%BF%BB%E8%AF%91&FORM=TTAHP1
+          - menuitem "地图" [ref=e36] [cursor=pointer]:
+            - link "地图" [ref=e37]:
+              - /url: /maps?FORM=Z9LH2
+          - menuitem "学术" [ref=e38] [cursor=pointer]:
+            - link "学术" [ref=e39]:
+              - /url: /academic?FORM=Z9LHS3
+          - menuitem ". . . 更多" [ref=e40] [cursor=pointer]:
+            - text: . . .
+            - button "更多" [ref=e41]
+    - generic [ref=e42]:
+      - generic [ref=e43]:
+        - generic [ref=e44]: 国内版
+        - generic [ref=e45] [cursor=pointer]: 国际版
+      - generic [ref=e46]:
+        - generic "输入搜索词" [ref=e47]:
+          - searchbox "输入搜索词" [active] [ref=e48]
+        - button "Search using voice" [ref=e51] [cursor=pointer]:
+          - img [ref=e52]
+        - button "Search"
+        - generic "搜索网页" [ref=e55] [cursor=pointer]:
+          - img [ref=e56]
+  - generic [ref=e62]:
+    - generic [ref=e64]:
+      - generic:
+        - generic:
+          - link "获取新版必应壁纸应用":
+            - /url: https://go.microsoft.com/fwlink/?linkid=2127455
+            - generic: 获取新版必应壁纸应用
+        - 'heading "每日一图: 纳奇兹小径公园大道, 图珀洛, 密西西比州, 美国" [level=3]':
+          - 'link "每日一图: 纳奇兹小径公园大道, 图珀洛, 密西西比州, 美国"':
+            - /url: /search?q=%e7%ba%b3%e5%a5%87%e5%85%b9%e5%b0%8f%e5%be%84%e6%97%a5%e5%87%ba%e6%ad%a5%e9%81%93&form=hpcapt&filters=HpDate:"20260605_1600"+mgzv3configlist:"BingQA_Encyclopedia_Layout"
+            - text: 纳奇兹小径公园大道, 图珀洛, 密西西比州, 美国
+        - generic:
+          - generic: © The best photo is earned/Getty Images Plus
+          - list:
+            - listitem:
+              - button "下载今日美图。仅限用作桌面壁纸。"
+      - generic [ref=e65]:
+        - link "多走走，多思考" [ref=e67] [cursor=pointer]:
+          - /url: /search?q=%e7%ba%b3%e5%a5%87%e5%85%b9%e5%b0%8f%e5%be%84%e6%97%a5%e5%87%ba%e6%ad%a5%e9%81%93&form=hpcapt&filters=HpDate:"20260605_1600"+mgzv3configlist:"BingQA_Encyclopedia_Layout"
+          - img [ref=e69]
+          - heading "多走走，多思考" [level=2] [ref=e72]
+        - generic [ref=e73] [cursor=pointer]:
+          - status [ref=e74]
+          - button "上一个图像" [disabled] [ref=e75]
+          - button "下一个图像" [disabled] [ref=e77]
+    - button "反馈" [ref=e79] [cursor=pointer]:
+      - img [ref=e80]
+      - generic: 反馈
+    - generic:
+      - complementary
+    - contentinfo:
+      - generic [ref=e82]:
+        - generic [ref=e83]: © 2026 Microsoft
+        - list [ref=e84]:
+          - listitem [ref=e85]:
+            - link "增值电信业务经营许可证：合字B2-20090007" [ref=e86] [cursor=pointer]:
+              - /url: https://dxzhgl.miit.gov.cn/dxxzsp/xkz/xkzgl/resource/qiyereport.jsp?num=caf04fa4-bd8a-4d9e-80b6-2aa1b86c1509&type=yreport
+          - listitem [ref=e87]:
+            - link "京ICP备10036305号-7" [ref=e88] [cursor=pointer]:
+              - /url: https://beian.miit.gov.cn
+          - listitem [ref=e89]:
+            - link "京公网安备11010802047360号" [ref=e90] [cursor=pointer]:
+              - /url: https://beian.mps.gov.cn/#/query/webSearch?code=11010802047360
+          - listitem [ref=e91]:
+            - link "隐私与 Cookie" [ref=e92] [cursor=pointer]:
+              - /url: //go.microsoft.com/fwlink/?LinkId=521839
+          - listitem [ref=e93]:
+            - link "法律声明" [ref=e94] [cursor=pointer]:
+              - /url: //go.microsoft.com/fwlink/?LinkID=246338
+          - listitem [ref=e95]:
+            - link "广告" [ref=e96] [cursor=pointer]:
+              - /url: //go.microsoft.com/fwlink/?linkid=868923
+          - listitem [ref=e97]:
+            - link "关于我们的广告" [ref=e98] [cursor=pointer]:
+              - /url: //go.microsoft.com/fwlink/?LinkID=286759
+          - listitem [ref=e99]:
+            - link "帮助" [ref=e100] [cursor=pointer]:
+              - /url: //support.microsoft.com/topic/82d20721-2d6f-4012-a13d-d1910ccf203f
+          - listitem [ref=e101]:
+            - link "反馈" [ref=e102] [cursor=pointer]:
+              - /url: "#"
