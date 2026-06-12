@@ -66,6 +66,34 @@ public class ContextBuilder
     /// <summary>已注册的工具定义列表</summary>
     public List<ToolDefinition> RegisteredTools { get; } = new();
 
+    /// <summary>当前对话运行期内已经成功执行过的关键工具（用于压缩后保留规划证据）</summary>
+    private readonly HashSet<string> _runtimeToolEvidence = new(StringComparer.OrdinalIgnoreCase);
+
+    public IReadOnlyCollection<string> RuntimeToolEvidence => _runtimeToolEvidence.ToArray();
+
+    public bool RuntimeHasTodoItems { get; set; }
+
+    public string? RuntimeActiveSubtaskId { get; set; }
+
+    public void RecordRuntimeToolEvidence(string toolName)
+    {
+        if (string.IsNullOrWhiteSpace(toolName)) return;
+        _runtimeToolEvidence.Add(toolName.Trim());
+    }
+
+    public bool HasRuntimeToolEvidence(string toolName)
+        => !string.IsNullOrWhiteSpace(toolName) && _runtimeToolEvidence.Contains(toolName.Trim());
+
+    public bool HasAnyRuntimeToolEvidence()
+        => _runtimeToolEvidence.Count > 0;
+
+    public void ClearRuntimeState()
+    {
+        _runtimeToolEvidence.Clear();
+        RuntimeHasTodoItems = false;
+        RuntimeActiveSubtaskId = null;
+    }
+
     // ====================================================================
     // 开关
     // ====================================================================
@@ -94,6 +122,7 @@ public class ContextBuilder
 
         AppendIdentity(sb);
         AppendBehaviorGuidelines(sb);
+        AppendOutputFormat(sb);
         AppendAgentStepProtocol(sb);
         AppendCapabilities(sb);
         AppendDynamicContext(sb);
@@ -230,10 +259,10 @@ public class ContextBuilder
         sb.AppendLine("## 行为准则");
         sb.AppendLine();
         sb.AppendLine("### 1. 主任务拆分机制（必须遵守）");
-        sb.AppendLine("接到用户任务后，**先把主任务拆分成若干可执行的子任务**，并立即用 `update_todo` 一次性写入完整清单，再按顺序自动执行每个子任务。");
-        sb.AppendLine("`update_todo` 的首次调用必须包含已经设计好的全部子任务；实时更新只更新这些既有子任务的完成情况，不要做一个新增一个。");
-        sb.AppendLine("执行任何子任务前，必须先调用 `start_subtask` 标记将要执行的子任务；系统会在该工具内部压缩此前上下文。第一个子任务也必须这样做，用于压缩任务分解阶段产生的上下文。");
-        sb.AppendLine("子任务成功后，调用 `finish_subtask(status=\"completed\")`，然后自然进入下一个子任务，不需要用户手动切换。");
+        sb.AppendLine("接到用户任务后，**第一步必须调用 `update_todo`**：先把主任务拆分成 2-6 个可执行的子任务，并一次性写入完整清单，再按顺序自动执行每个子任务。");
+        sb.AppendLine("`update_todo` 的首次调用必须包含已经设计好的全部子任务，`items` 不能为空；实时更新只更新这些既有子任务的完成情况，不要做一个新增一个。");
+        sb.AppendLine("`update_todo` 成功后，执行任何浏览器/信息收集动作前，必须先调用 `start_subtask` 标记将要执行的子任务；系统会在该工具内部压缩此前上下文。第一个子任务也必须这样做，用于压缩任务分解阶段产生的上下文。");
+        sb.AppendLine("子任务成功后，调用 `finish_subtask(status=\"completed\")`；系统会立即把下一个待办子任务标为进行中，然后自然进入下一个子任务，不需要用户手动切换。");
         sb.AppendLine("例如「去超星学习通完成计算机英语课程的所有作业」→");
         sb.AppendLine("  子任务1: 登录超星学习通平台 ✓");
         sb.AppendLine("  子任务2: 找到计算机英语课程 ✓");
@@ -244,7 +273,7 @@ public class ContextBuilder
         sb.AppendLine();
         sb.AppendLine("### 2. 子任务执行规则");
         sb.AppendLine("- **执行前** → 调用 `start_subtask`，让系统压缩此前上下文并把当前子任务标为进行中");
-        sb.AppendLine("- **成功** → 调用 `finish_subtask(status=\"completed\")`，自然进入下一子任务");
+        sb.AppendLine("- **成功** → 调用 `finish_subtask(status=\"completed\")`，系统会立刻更新清单并把下一子任务标为进行中");
         sb.AppendLine("- **首次失败** → **立即重试 1 次**（可能只是页面抖动）");
         sb.AppendLine("- **再次失败** → **切换思路执行 2 次**，例如：");
         sb.AppendLine("  1. 先 `browser_snapshot` 获取最新页面快照，重新选择元素整数 `id`");
@@ -269,6 +298,11 @@ public class ContextBuilder
         sb.AppendLine();
         sb.AppendLine("### 4. 核心原则");
         sb.AppendLine("- **观察/快照即事实**：`observe_browser` / `browser_snapshot` 返回什么就说什么，绝不编造页面内容");
+        sb.AppendLine("- **先查书签和历史记录，再用网页搜索**：需要寻找或打开网页时，严格按以下顺序执行 ——");
+        sb.AppendLine("  1. **搜索书签**：先在用户的书签中查找是否有目标页面；");
+        sb.AppendLine("  2. **搜索历史记录**：书签中没有找到时，在浏览历史记录中查找是否曾经访问过；");
+        sb.AppendLine("  3. **网页搜索**：前两步都没找到时，再用搜索引擎/网页搜索功能查找；");
+        sb.AppendLine("- **不臆造域名**：需要打开官网、资料来源或网页搜索结果时，如果用户没有提供明确 URL，不要自以为创造域名；先通过书签或搜索结果确认，再基于有效结果继续");
         sb.AppendLine("- **观察 id 定位优先**：点击/输入/悬停/选择都使用最新观察或快照返回的整数 `id`，不要编造 `xp=` hash 或 CSS 选择器");
         sb.AppendLine("- **截图克制**：不要为了普通文本提取或搜索结果确认调用 `browser_screenshot`；只有用户要求视觉确认或结构化观察连续失败时才截图，并说明 reason");
         sb.AppendLine("- **及时总结**：提取到足够信息后立即给出答案，不发起多余工具调用");
@@ -281,6 +315,50 @@ public class ContextBuilder
         sb.AppendLine();
     }
 
+    private void AppendOutputFormat(StringBuilder sb)
+    {
+        sb.AppendLine("## 输出格式要求（必须遵守）");
+        sb.AppendLine();
+        sb.AppendLine("你的可见回复使用以下标题分区：`[思考过程]`、`[结论]`。需要用户协助时不要手写 `[AIneedhelp]`，必须调用 `ask_user`，界面会按发生时间自动插入 `[AIneedhelp]` 板块。");
+        sb.AppendLine();
+        sb.AppendLine("1. **[思考过程]**：任务执行中的主输出。包括：");
+        sb.AppendLine("   - 上一步工具调用结果的评估（Success / Failed / Uncertain）");
+        sb.AppendLine("   - 当前任务进展和关键发现（记忆）");
+        sb.AppendLine("   - 下一轮的目标和工具选择理由");
+        sb.AppendLine("   - 对页面内容的必要分析和判断");
+        sb.AppendLine();
+        sb.AppendLine("2. **[结论]**：只在任务完成、失败、无法继续或给最终答复时输出。包括：");
+        sb.AppendLine("   - 对用户的直接回答");
+        sb.AppendLine("   - 任务完成后的总结报告");
+        sb.AppendLine("   - 失败/受阻原因和用户可采取的下一步");
+        sb.AppendLine("   - 识别结果、数据汇总等可交付内容");
+        sb.AppendLine();
+        sb.AppendLine("执行中示例：");
+        sb.AppendLine("```");
+        sb.AppendLine("[思考过程]");
+        sb.AppendLine("上一步评估：已成功调用 browser_navigate，页面返回 200。");
+        sb.AppendLine("记忆：当前在 QQ 邮箱登录页，尚未登录。");
+        sb.AppendLine("下一目标：调用 observe_browser 观察页面状态。");
+        sb.AppendLine("```");
+        sb.AppendLine();
+        sb.AppendLine("最终示例：");
+        sb.AppendLine("```");
+        sb.AppendLine("[思考过程]");
+        sb.AppendLine("上一步评估：已确认目标信息完整。");
+        sb.AppendLine("记忆：已完成用户请求的全部步骤。");
+        sb.AppendLine();
+        sb.AppendLine("[结论]");
+        sb.AppendLine("任务已完成：已找到目标信息并整理如下……");
+        sb.AppendLine("```");
+        sb.AppendLine();
+        sb.AppendLine("重要规则：");
+        sb.AppendLine("- 任务仍在推进时，只输出 `[思考过程]`，不要提前输出 `[结论]`。");
+        sb.AppendLine("- 当需要用户确认、选择或补充信息时，调用 `ask_user`，不要手写 `[AIneedhelp]`。");
+        sb.AppendLine("- 最终可见顺序应是若干 `[思考过程]` 和按时序插入的 `[AIneedhelp]` 在前，最后以 `[结论]` 收尾。");
+        sb.AppendLine("- 不要在分区标题外输出额外包装文本；思考过程保持简洁、操作性强。");
+        sb.AppendLine();
+    }
+
     private void AppendAgentStepProtocol(StringBuilder sb)
     {
         if (RegisteredTools.Count == 0) return;
@@ -290,13 +368,14 @@ public class ContextBuilder
         sb.AppendLine("处理浏览器自动化任务时，按 PageAgent 风格循环执行：观察 → 评估 → 记忆 → 目标 → 动作。");
         sb.AppendLine();
         sb.AppendLine("每次页面可能变化后（导航、点击、提交、滚动、等待后），先调用 `observe_browser` 重新观察页面状态；元素整数 `id` 只对最新观察/快照有效。");
-        sb.AppendLine("每次工具调用前，在回复中用 1-3 行简短说明：");
-        sb.AppendLine("- `上一步评估`：明确判断上一动作 Success / Failed / Uncertain，不要因为工具已调用就假设成功；");
+        sb.AppendLine("每次工具调用前，在 `[思考过程]` 中用 1-3 行简短说明：");
+        sb.AppendLine("- `上一步评估`：明确判断上一动作 Success / Failed / Uncertain；");
         sb.AppendLine("- `记忆`：记录当前任务进展、已找到的信息、已尝试但无效的路径；");
         sb.AppendLine("- `下一目标`：说明本轮要达成的一个具体目标，然后只选择一个最合适的工具调用。");
         sb.AppendLine();
         sb.AppendLine("如果连续操作没有带来页面变化或有效信息，说明可能卡住：先换路线（重新观察、等待具体文本、滚动、键盘操作、组合技能），仍无法推进时用 `ask_user` 求助。");
-        sb.AppendLine("完成用户请求或确认无法继续时，停止调用工具并给出清晰结论；不确定或部分完成时要明确说明缺口。");
+        sb.AppendLine("当系统消息出现 `[agent_event ...]` 时，必须优先遵循其中的 instruction；不要继续重复同一个工具和同一组参数。");
+        sb.AppendLine("完成用户请求或确认无法继续时，停止调用工具并用 `[结论]` 给出清晰结论；不确定或部分完成时要明确说明缺口。未完成前不要提前输出 `[结论]`。");
         sb.AppendLine();
     }
 

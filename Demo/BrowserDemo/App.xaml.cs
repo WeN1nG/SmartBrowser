@@ -1,4 +1,6 @@
+using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Threading;
 using BrowserDemo.Services;
 
 namespace BrowserDemo;
@@ -7,6 +9,10 @@ public partial class App : Application
 {
     protected override void OnStartup(StartupEventArgs e)
     {
+        AppDomain.CurrentDomain.UnhandledException += OnUnhandledException;
+        DispatcherUnhandledException += OnDispatcherUnhandledException;
+        TaskScheduler.UnobservedTaskException += OnUnobservedTaskException;
+
         // 分配后台控制台 —— 所有日志输出到此窗口
         Logger.AllocConsole();
         Logger.Info("═══════════════════════════════════════");
@@ -32,6 +38,30 @@ public partial class App : Application
         Logger.Info($"  退出代码: {e.ApplicationExitCode}");
         Logger.Info("═══════════════════════════════════════");
 
+        TaskScheduler.UnobservedTaskException -= OnUnobservedTaskException;
+        DispatcherUnhandledException -= OnDispatcherUnhandledException;
+        AppDomain.CurrentDomain.UnhandledException -= OnUnhandledException;
+
         base.OnExit(e);
+    }
+
+    private void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
+    {
+        Logger.Exception("UI 线程未处理异常", e.Exception);
+        e.Handled = true;
+    }
+
+    private void OnUnhandledException(object sender, UnhandledExceptionEventArgs e)
+    {
+        if (e.ExceptionObject is Exception ex)
+            Logger.Exception("AppDomain 未处理异常", ex);
+        else
+            Logger.Error($"AppDomain 未处理异常: {e.ExceptionObject}");
+    }
+
+    private void OnUnobservedTaskException(object? sender, UnobservedTaskExceptionEventArgs e)
+    {
+        Logger.Exception("未观察到的 Task 异常", e.Exception);
+        e.SetObserved();
     }
 }

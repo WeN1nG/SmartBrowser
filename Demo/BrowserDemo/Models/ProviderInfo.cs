@@ -60,10 +60,10 @@ public static class ProviderManager
     public static ObservableCollection<ProviderInfo> GetAll()
     {
         var order = new[] {
-            "openai", "anthropic", "google", "deepseek", "xai",
+            "openai", "anthropic", "google", "deepseek", "volcengine-ark", "xai",
             "groq", "cerebras", "mistral", "togetherai", "fireworks",
             "openrouter", "alibaba", "zhipu", "moonshot", "siliconflow",
-            "ollama"
+            "ollama", "custom"
         };
         var list = new ObservableCollection<ProviderInfo>();
         foreach (var key in order)
@@ -118,6 +118,8 @@ public static class ProviderManager
             new ModelInfo("deepseek-chat",        "DeepSeek V3",         64,  "chat,code"),
             new ModelInfo("deepseek-reasoner",    "DeepSeek R1",         64,  "reasoning,code")
         );
+
+        Register("volcengine-ark", "Volcengine ARK Coding Plan（火山方舟）", "https://ark.cn-beijing.volces.com/api/coding/v3", "Bearer", "火山方舟");
 
         Register("xai", "xAI (Grok)", "https://api.x.ai/v1/chat/completions", "Bearer", "X 数据",
             new ModelInfo("grok-4",               "Grok 4",              256, "chat,vision,reasoning"),
@@ -199,6 +201,9 @@ public static class ProviderManager
             new ModelInfo("meta-llama/Llama-3-3-70B", "Llama 3.3 70B", 128, "chat"),
             new ModelInfo("mistralai/Mixtral-8x7B",   "Mixtral 8x7B",  32,  "chat")
         );
+
+        // 自定义 OpenAI 兼容服务商（无默认端点，无固定模型列表）
+        Register("custom", "自定义（OpenAI 兼容）", "", "Bearer", "自定义");
     }
 
     private static void Register(string key, string displayName, string endpoint,

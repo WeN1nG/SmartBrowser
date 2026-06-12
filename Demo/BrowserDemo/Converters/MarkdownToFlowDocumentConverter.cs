@@ -304,69 +304,95 @@ public class MarkdownToFlowDocumentConverter : IValueConverter
 
     /// <summary>
     /// 解析行内格式：**粗体**、*斜体*、`代码`、[链接](url)
-    /// 使用正则分段处理，避免嵌套复杂。
+    /// 使用逐字符扫描替代正则，避免大文本时 Regex 回溯导致 UI 线程卡死。
     /// </summary>
     private static List<Inline> ParseInline(string text)
     {
         var inlines = new List<Inline>();
+        int i = 0;
+        int len = text.Length;
 
-        // 按格式标记分段处理
-        // 匹配顺序：`行内代码` > [链接](url) > **粗体** > *斜体* > 纯文本
-        var pattern = @"(`[^`]+`)|(\[([^\]]+)\]\(([^)]+)\))|(\*\*([^*]+)\*\*)|(\*([^*]+)\*)";
-        int last = 0;
-
-        foreach (Match m in Regex.Matches(text, pattern))
+        while (i < len)
         {
-            // 前面的普通文本
-            if (m.Index > last)
+            // --- 行内代码 `...` ---
+            if (text[i] == '`')
             {
-                var plain = text[last..m.Index];
-                if (!string.IsNullOrEmpty(plain))
-                    inlines.Add(new Run(plain));
-            }
-
-            if (m.Groups[1].Success)
-            {
-                // `行内代码`
-                var codeText = m.Groups[1].Value;
-                inlines.Add(new Run(codeText[1..^1])
+                int end = text.IndexOf('`', i + 1);
+                if (end < 0) end = len;
+                string codeText = text.Substring(i + 1, end - i - 1);
+                inlines.Add(new Run(codeText)
                 {
                     FontFamily = new FontFamily("Consolas"),
                     Foreground = InlineCodeBrush,
                     Background = CodeBgBrush,
                     FontSize = DefaultFontSize - 1
                 });
+                i = end + 1;
+                continue;
             }
-            else if (m.Groups[2].Success)
+
+            // --- 粗体 **...** ---
+            if (i + 1 < len && text[i] == '*' && text[i + 1] == '*')
             {
-                // [链接](url)
-                inlines.Add(new Hyperlink(new Run(m.Groups[3].Value))
+                int end = text.IndexOf("**", i + 2, StringComparison.Ordinal);
+                if (end < 0) end = len;
+                string boldText = text.Substring(i + 2, end - i - 2);
+                inlines.Add(new Run(boldText) { FontWeight = FontWeights.Bold });
+                i = (end < len) ? end + 2 : len;
+                continue;
+            }
+
+            // --- 链接 [text](url) ---
+            if (text[i] == '[')
+            {
+                int bracketEnd = text.IndexOf(']', i + 1);
+                if (bracketEnd + 1 < len && text[bracketEnd + 1] == '(')
                 {
-                    Foreground = LinkBrush,
-                    NavigateUri = new Uri(m.Groups[4].Value),
-                    ToolTip = m.Groups[4].Value
-                });
-            }
-            else if (m.Groups[5].Success)
-            {
-                // **粗体**
-                inlines.Add(new Run(m.Groups[6].Value) { FontWeight = FontWeights.Bold });
-            }
-            else if (m.Groups[7].Success)
-            {
-                // *斜体*
-                inlines.Add(new Run(m.Groups[8].Value) { FontStyle = FontStyles.Italic });
+                    int parenEnd = text.IndexOf(')', bracketEnd + 2);
+                    if (parenEnd >= 0)
+                    {
+                        string linkText = text.Substring(i + 1, bracketEnd - i - 1);
+                        string linkUrl = text.Substring(bracketEnd + 2, parenEnd - bracketEnd - 2);
+                        Uri uri;
+                        try
+                        {
+                            uri = new Uri(linkUrl);
+                        }
+                        catch (UriFormatException)
+                        {
+                            inlines.Add(new Run(linkText) { FontWeight = FontWeights.Bold });
+                            i = parenEnd + 1;
+                            continue;
+                        }
+                        inlines.Add(new Hyperlink(new Run(linkText))
+                        {
+                            Foreground = LinkBrush,
+                            NavigateUri = uri,
+                            ToolTip = linkUrl
+                        });
+                        i = parenEnd + 1;
+                        continue;
+                    }
+                }
             }
 
-            last = m.Index + m.Length;
-        }
+            // --- 斜体 *...* （非粗体双星号） ---
+            if (text[i] == '*' && (i + 1 >= len || text[i + 1] != '*'))
+            {
+                int end = text.IndexOf('*', i + 1);
+                bool hasClose = end > i + 1 && !(end + 1 < len && text[end + 1] == '*');
+                if (hasClose)
+                {
+                    string italicText = text.Substring(i + 1, end - i - 1);
+                    inlines.Add(new Run(italicText) { FontStyle = FontStyles.Italic });
+                    i = end + 1;
+                    continue;
+                }
+            }
 
-        // 剩余文本
-        if (last < text.Length)
-        {
-            var remaining = text[last..];
-            if (!string.IsNullOrEmpty(remaining))
-                inlines.Add(new Run(remaining));
+            // --- 普通字符 ---
+            inlines.Add(new Run(text[i].ToString()));
+            i++;
         }
 
         return inlines;

@@ -107,7 +107,9 @@ public class BrowserHostService : IDisposable
         var options = new CoreWebView2EnvironmentOptions
         {
             // 允许某些站点要求的功能（如 autoplay）
-            AdditionalBrowserArguments = "--disable-features=msSmartScreenProtection"
+            // 忽略 SSL 证书错误：许多企业内部站/学习平台使用自签名证书，
+            // 直接拒绝会导致 browser_navigate 永远失败（如 linehelp.cn 案例）
+            AdditionalBrowserArguments = "--disable-features=msSmartScreenProtection --ignore-certificate-errors"
         };
 
         _environment = string.IsNullOrEmpty(UserDataFolder)

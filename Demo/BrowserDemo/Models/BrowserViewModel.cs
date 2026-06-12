@@ -18,6 +18,8 @@ public class BrowserViewModel : INotifyPropertyChanged
     private string _statusText = "就绪";
 
     public ObservableCollection<TabInfo> Tabs { get; } = new();
+    public ObservableCollection<BookmarkInfo> Bookmarks { get; } = new();
+    public ObservableCollection<HistoryInfo> History { get; } = new();
 
     public TabInfo? ActiveTab
     {
@@ -61,6 +63,8 @@ public class BrowserViewModel : INotifyPropertyChanged
     }
 
     public bool HasTabs => Tabs.Count > 0;
+    public bool HasBookmarks => Bookmarks.Count > 0;
+    public bool HasHistory => History.Count > 0;
 
     // AI 对话 ViewModel
     public ChatViewModel Chat { get; } = new();
@@ -74,6 +78,10 @@ public class BrowserViewModel : INotifyPropertyChanged
     public ICommand RefreshCommand { get; }
     public ICommand DownloadCommand { get; }
     public ICommand ActivateTabCommand { get; }
+    public ICommand AddBookmarkCommand { get; }
+    public ICommand OpenBookmarkCommand { get; }
+    public ICommand ShowHistoryCommand { get; }
+    public ICommand OpenHistoryCommand { get; }
 
     // 导航事件 — View 订阅
     public event Action<string>? NavigateRequested;
@@ -81,6 +89,7 @@ public class BrowserViewModel : INotifyPropertyChanged
     public event Action? GoForwardRequested;
     public event Action? RefreshRequested;
     public event Action? DownloadRequested;
+    public event Action? ShowHistoryRequested;
     public event Action<Guid>? TabActivated;
     public event Action<Guid>? TabClosed;
 
@@ -96,6 +105,18 @@ public class BrowserViewModel : INotifyPropertyChanged
         RefreshCommand = new RelayCommand(_ => RefreshRequested?.Invoke());
         DownloadCommand = new RelayCommand(_ => DownloadRequested?.Invoke());
         ActivateTabCommand = new RelayCommand(id => ActivateTab(id));
+        AddBookmarkCommand = new RelayCommand(_ => AddCurrentPageToBookmarks());
+        OpenBookmarkCommand = new RelayCommand(bookmark => OpenBookmark(bookmark));
+        ShowHistoryCommand = new RelayCommand(_ => ShowHistoryRequested?.Invoke());
+        OpenHistoryCommand = new RelayCommand(history => OpenHistory(history));
+
+        foreach (var bookmark in BookmarkService.LoadBookmarks())
+            Bookmarks.Add(bookmark);
+        Bookmarks.CollectionChanged += (_, _) => OnPropertyChanged(nameof(HasBookmarks));
+
+        foreach (var item in HistoryService.LoadHistory())
+            History.Add(item);
+        History.CollectionChanged += (_, _) => OnPropertyChanged(nameof(HasHistory));
 
         // 默认打开一页
         AddNewTab("https://www.bing.com");
@@ -178,6 +199,118 @@ public class BrowserViewModel : INotifyPropertyChanged
         Logger.Info($"导航到: {url}");
         ActiveTab.Url = url;
         NavigateRequested?.Invoke(url);
+    }
+
+    public void AddCurrentPageToBookmarks()
+    {
+        if (ActiveTab == null)
+        {
+            StatusText = "没有可收藏的页面";
+            return;
+        }
+
+        var url = ActiveTab.Url.Trim();
+        if (string.IsNullOrWhiteSpace(url) || string.Equals(url, "about:blank", StringComparison.OrdinalIgnoreCase))
+        {
+            StatusText = "当前页面无法收藏";
+            return;
+        }
+
+        if (Bookmarks.Any(x => string.Equals(x.Url, url, StringComparison.OrdinalIgnoreCase)))
+        {
+            StatusText = "该页面已在收藏夹中";
+            return;
+        }
+
+        var title = ActiveTab.Title.Trim();
+        if (string.IsNullOrWhiteSpace(title) || title == "新标签页")
+            title = url;
+
+        var bookmark = new BookmarkInfo
+        {
+            Title = title,
+            Url = url,
+            CreatedAt = DateTime.Now
+        };
+        Bookmarks.Add(bookmark);
+
+        if (BookmarkService.SaveBookmarks(Bookmarks))
+            StatusText = $"已收藏：{title}";
+        else
+            StatusText = "收藏保存失败";
+    }
+
+    public void OpenBookmark(object? parameter)
+    {
+        var url = parameter switch
+        {
+            BookmarkInfo bookmark => bookmark.Url,
+            string text => text,
+            _ => null
+        };
+
+        if (string.IsNullOrWhiteSpace(url)) return;
+
+        Logger.Info($"打开书签: {url}");
+        if (ActiveTab == null)
+        {
+            AddNewTab(url);
+        }
+        else
+        {
+            AddressText = url;
+            ActiveTab.Url = url;
+            NavigateRequested?.Invoke(url);
+        }
+        StatusText = $"打开收藏：{url}";
+    }
+
+    /// <summary>记录一条历史记录（去重、最多保留 500 条）</summary>
+    public void RecordHistoryEntry(string url, string title)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return;
+
+        // 如果最后一条就是同一 URL，移除后重新插入（避免连续记录相同页面，同时刷新 UI）
+        var existing = History.FirstOrDefault();
+        if (existing != null && existing.Url == url)
+            History.RemoveAt(0);
+
+        var entry = new HistoryInfo
+        {
+            Title = string.IsNullOrEmpty(title) ? url : title,
+            Url = url,
+            VisitedAt = DateTime.Now
+        };
+        History.Insert(0, entry);
+
+        // 自动限容
+        while (History.Count > 500)
+            History.RemoveAt(History.Count - 1);
+    }
+
+    public void OpenHistory(object? parameter)
+    {
+        var url = parameter switch
+        {
+            HistoryInfo h => h.Url,
+            string text => text,
+            _ => null
+        };
+
+        if (string.IsNullOrWhiteSpace(url)) return;
+
+        Logger.Info($"打开历史记录: {url}");
+        if (ActiveTab == null)
+        {
+            AddNewTab(url);
+        }
+        else
+        {
+            AddressText = url;
+            ActiveTab.Url = url;
+            NavigateRequested?.Invoke(url);
+        }
+        StatusText = $"打开历史记录：{url}";
     }
 
     public void SyncAddressBar()

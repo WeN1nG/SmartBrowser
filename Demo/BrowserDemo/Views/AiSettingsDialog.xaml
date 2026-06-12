@@ -5,9 +5,10 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         mc:Ignorable="d"
         Title="AI 设置 — 服务商 &amp; 模型"
-        Height="560" Width="520"
+        Height="560" Width="560"
+        MinHeight="560" MinWidth="520"
         WindowStartupLocation="CenterOwner"
-        ResizeMode="NoResize"
+        ResizeMode="CanResizeWithGrip"
         Background="#1E1E22"
         Foreground="#EEE"
         FontFamily="Segoe UI">
@@ -138,8 +139,9 @@
                 <Label Style="{StaticResource FieldLabel}" Content="API 端点（留空 = 默认）"/>
                 <TextBox x:Name="EndpointBox" Style="{StaticResource TextBoxStyle}"/>
 
-                <TextBlock Text="修改端点可用于代理/镜像/自托管场景"
-                           Foreground="#666" FontSize="10" Margin="0,-6,0,10"/>
+                <TextBlock Text="修改端点可用于代理/镜像/自托管场景；火山方舟 Coding Plan OpenAI Base URL：https://ark.cn-beijing.volces.com/api/coding/v3"
+                           Foreground="#666" FontSize="10" Margin="0,-6,0,10"
+                           TextWrapping="Wrap"/>
 
                 <!-- ===== 5. 测试连接 ===== -->
                 <Grid Margin="0,4,0,0">

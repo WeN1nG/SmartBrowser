@@ -19,6 +19,7 @@ public partial class MainWindow : Window
     // ★★ V3 新架构：BrowserHostService 取代 ChromeProcessManager ★★
     private BrowserHostService? _browserHost;
     private BrowserAutomationService? _automation;
+    private readonly HashSet<Guid> _webViewCreationInProgress = new();
 
     public MainWindow()
     {
@@ -33,6 +34,7 @@ public partial class MainWindow : Window
         _vm.GoForwardRequested += OnGoForward;
         _vm.RefreshRequested += OnRefresh;
         _vm.DownloadRequested += ShowDownloadsWindow;
+        _vm.ShowHistoryRequested += ShowHistoryPopup;
         _vm.TabClosed += OnTabClosed;
         _vm.TabActivated += OnTabActivated;
         _vm.PropertyChanged += OnVmPropertyChanged;
@@ -41,6 +43,15 @@ public partial class MainWindow : Window
         {
             Logger.Debug($"Tabs 集合变化: {args.Action} → 共 {_vm.Tabs.Count} 个标签");
             UpdateTabCount();
+
+            if (args.NewItems != null)
+            {
+                foreach (var item in args.NewItems)
+                {
+                    if (item is TabInfo tab)
+                        _ = EnsureAddedTabWebViewAsync(tab);
+                }
+            }
         };
 
         _vm.Chat.OpenSettingsRequested += OpenAiSettings;
@@ -51,6 +62,8 @@ public partial class MainWindow : Window
         // 主窗口关闭 → 清理全部资源
         Closing += (_, _) =>
         {
+            // ★ 先取消正在进行的 AI 请求，防止 async void SendAsync 残留存活导致崩溃 ★
+            _vm.Chat.CancelActiveRequest();
             _vm.Chat.DetachAutomationRouter();
             if (_vm.Chat.SkillSystem.IsInitialized)
                 _vm.Chat.SkillSystem.Shutdown();
@@ -158,6 +171,13 @@ public partial class MainWindow : Window
                     _vm.Chat.CurrentPageUrl = info.Url;
                 }
 
+                if (info.IsSuccess && !string.IsNullOrWhiteSpace(info.Url) && info.Url != "about:blank")
+                {
+                    var tab = _vm.Tabs.FirstOrDefault(t => t.Id == tabId);
+                    _vm.RecordHistoryEntry(info.Url, tab?.Title ?? info.Url);
+                    HistoryService.SaveHistory(_vm.History);
+                }
+
                 _automation?.NotifyNavigationCompleted(tabId, new NavigationEventInfo
                 {
                     Url = info.Url,
@@ -218,8 +238,33 @@ public partial class MainWindow : Window
     // 标签 → WebView2 生命周期
     // ====================================================================
 
+    private async Task EnsureAddedTabWebViewAsync(TabInfo tab)
+    {
+        if (_browserHost == null) return;
+
+        // 防止并发重复创建同一个标签的 WebView2
+        if (!_webViewCreationInProgress.Add(tab.Id))
+            return;
+
+        try
+        {
+            using var _ = Logger.Trace($"MainWindow::EnsureAddedTabWebViewAsync({tab.Id})");
+
+            await EnsureTabWebViewAsync(tab);
+
+            // 创建完成后再判断——如果期间标签被切换，仍需要激活新创建的 WebView2
+            ActivateTabWebView(tab.Id);
+        }
+        finally
+        {
+            _webViewCreationInProgress.Remove(tab.Id);
+        }
+    }
+
     private async Task EnsureTabWebViewAsync(TabInfo tab)
     {
+        using var _ = Logger.Trace($"MainWindow::EnsureTabWebViewAsync({tab.Id})");
+
         if (_browserHost == null) return;
         if (_browserHost.GetWebViewForTab(tab.Id) != null) return;
 
@@ -329,9 +374,22 @@ public partial class MainWindow : Window
 
     private async void OnTabClosed(Guid id)
     {
-        if (_browserHost != null && _browserHost.GetWebViewForTab(id) != null)
-            await _browserHost.CloseTabAsync(id);
-        UpdateTabCount();
+        using var _ = Logger.Trace($"MainWindow::OnTabClosed({id})");
+
+        try
+        {
+            if (_browserHost != null && _browserHost.GetWebViewForTab(id) != null)
+                await _browserHost.CloseTabAsync(id);
+        }
+        catch (Exception ex)
+        {
+            Logger.Exception($"关闭标签 {id} 的 WebView 失败", ex);
+            _vm.StatusText = $"标签关闭失败：{ex.Message}";
+        }
+        finally
+        {
+            UpdateTabCount();
+        }
     }
 
     private void OnVmPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
@@ -410,6 +468,17 @@ public partial class MainWindow : Window
         {
             Logger.Exception("显示下载窗口失败", ex);
         }
+    }
+
+    private void ShowHistoryPopup()
+    {
+        if (!_vm.HasHistory)
+        {
+            _vm.StatusText = "暂无历史记录";
+            return;
+        }
+
+        HistoryPopup.IsOpen = true;
     }
 
     // ====================================================================

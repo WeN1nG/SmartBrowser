@@ -32,6 +32,7 @@ public class ChatViewModel : INotifyPropertyChanged
     private int _tokenEstimate;
     private string? _currentPageUrl;
     private string? _currentPageTitle;
+    private string _askUserDraftResponse = string.Empty;
 
     // ====== MCP 浏览器自动化技能系统 ======
 
@@ -55,6 +56,9 @@ public class ChatViewModel : INotifyPropertyChanged
 
     /// <summary>工具调用重试追踪：toolName → (attemptCount, lastError)</summary>
     private readonly Dictionary<string, (int Count, string? LastError)> _toolRetryTracker = new();
+
+    /// <summary>防止主请求和 ask_user 续流并发操作同一组消息</summary>
+    private readonly SemaphoreSlim _aiLoopGate = new(1, 1);
 
     public ObservableCollection<ChatMessage> Messages { get; } = new();
     public ObservableCollection<ConversationSummary> ConversationList { get; } = new();
@@ -117,6 +121,12 @@ public class ChatViewModel : INotifyPropertyChanged
         set { _tokenEstimate = value; OnPropertyChanged(); }
     }
 
+    public string AskUserDraftResponse
+    {
+        get => _askUserDraftResponse;
+        set { _askUserDraftResponse = value; OnPropertyChanged(); CommandManager.InvalidateRequerySuggested(); }
+    }
+
     public string ToggleLabel => IsAiPanelVisible ? "◀ 收起" : "▶ AI";
 
     public AiSettings AiSettings => _aiClient.Settings;
@@ -138,6 +148,8 @@ public class ChatViewModel : INotifyPropertyChanged
     public ICommand RespondToQuestionCommand { get; }
     /// <summary>跳过当前问题，让 AI 自行决定</summary>
     public ICommand SkipQuestionCommand { get; }
+    /// <summary>提交 ask_user 开放问题的内联回复</summary>
+    public ICommand SubmitAskUserDraftCommand { get; }
 
     // 事件：通知 View 打开设置对话框
     public event Action? OpenSettingsRequested;
@@ -166,13 +178,18 @@ public class ChatViewModel : INotifyPropertyChanged
         ExecuteSkillCommand = new RelayCommand(async skillId => await ExecuteSkillProxy(skillId));
         ShowSkillStatusCommand = new RelayCommand(_ => ShowSkillStatusProxy());
         RespondToQuestionCommand = new RelayCommand(option => {
-            if (option is string opt && IsAwaitingUserInput)
+            if (option is string opt && CanRespondToAskUser)
                 RespondToQuestionAsync(opt);
-        });
+        }, option => option is string opt && !string.IsNullOrWhiteSpace(opt) && CanRespondToAskUser);
         SkipQuestionCommand = new RelayCommand(_ => {
-            if (IsAwaitingUserInput)
+            if (CanRespondToAskUser)
                 RespondToQuestionAsync("__skip__");
-        });
+        }, _ => CanRespondToAskUser);
+        SubmitAskUserDraftCommand = new RelayCommand(_ => {
+            var answer = AskUserDraftResponse.Trim();
+            if (!string.IsNullOrWhiteSpace(answer) && CanRespondToAskUser)
+                RespondToQuestionAsync(answer);
+        }, _ => !string.IsNullOrWhiteSpace(AskUserDraftResponse) && CanRespondToAskUser);
 
         // ★★★ MCP 技能系统初始化在 SetChromeCdpEndpoint 被调用后开始（否则等待）★★★
 
@@ -353,13 +370,13 @@ public class ChatViewModel : INotifyPropertyChanged
         _contextBuilder.RegisterTool(new ToolDefinition
         {
             Name = "update_todo",
-            Description = "[实时任务清单] 创建或更新右侧 AI 面板中的任务清单。必须在开始执行前一次性写入完整子任务列表；后续实时更新只更新既有子任务的 pending、in_progress、completed 或 blocked 状态，不要做一个新增一个。",
+            Description = "[实时任务清单] 创建或更新右侧 AI 面板中的任务清单。用户提出任务后的第一步必须调用本工具；items 不能为空，必须一次性写入完整子任务列表；后续实时更新只更新既有子任务的 pending、in_progress、completed 或 blocked 状态，不要做一个新增一个。",
             Parameters = new()
             {
                 ["items"] = new Dictionary<string, object?>
                 {
                     ["type"] = "array",
-                    ["description"] = "完整任务清单。首次调用必须包含拆分出的全部子任务；后续每次调用仍传当前完整列表，仅更新状态和说明，保持顺序与 ID 稳定。",
+                    ["description"] = "完整任务清单，不能为空。首次调用必须包含拆分出的全部子任务；后续每次调用仍传当前完整列表，仅更新状态和说明，保持顺序与 ID 稳定。",
                     ["items"] = new Dictionary<string, object?>
                     {
                         ["type"] = "object",
@@ -402,7 +419,7 @@ public class ChatViewModel : INotifyPropertyChanged
         _contextBuilder.RegisterTool(new ToolDefinition
         {
             Name = "finish_subtask",
-            Description = "[主任务拆分] 结束当前子任务并更新状态。成功传 completed 后自然进入下一子任务；失败按 1 次重试 + 2 次换思路后仍失败时传 blocked 并报告需要用户手动处理。",
+            Description = "[主任务拆分] 结束当前子任务并更新状态。成功传 completed 后系统会立即把下一个 pending 子任务标为 in_progress；失败按 1 次重试 + 2 次换思路后仍失败时传 blocked 并报告需要用户手动处理。",
             Parameters = new()
             {
                 ["id"] = new Dictionary<string, object?> { ["type"] = "string", ["description"] = "子任务 ID" },
@@ -479,8 +496,71 @@ public class ChatViewModel : INotifyPropertyChanged
     /// <summary>AI 已发送的累计字符串（用于 ask_user 后追加）</summary>
     private int _pendingAiMsgInitialLength;
 
+    /// <summary>当前可交互的 ask_user 提示消息</summary>
+    private ChatMessage? _pendingAskUserPromptMsg;
+
     /// <summary>用户回答后继续执行流</summary>
     private bool _isResponding;
+
+    public bool CanRespondToAskUser => IsAwaitingUserInput && !_isResponding;
+
+    private List<ChatMessage> BuildApiConversationMessages()
+        => Messages.Where(m => !m.IsAskUserPrompt).ToList();
+
+    private static void FinalizeAssistantMessage(ChatMessage aiMsg)
+    {
+        // Content 保留原始分区文本；UI 通过 ThinkingContent / ConclusionContent 派生显示。
+        aiMsg.NotifyContentChanged();
+    }
+
+    private void ShowAskUserPromptMessage(UserQuestionInfo questionInfo)
+    {
+        if (_pendingAskUserPromptMsg?.IsAskUserActive == true)
+        {
+            _pendingAskUserPromptMsg.IsAskUserActive = false;
+            _pendingAskUserPromptMsg.NotifyContentChanged();
+        }
+
+        AskUserDraftResponse = string.Empty;
+
+        var promptMsg = new ChatMessage
+        {
+            Role = MessageRole.Assistant,
+            DisplayRoleLabelOverride = "[AIneedhelp]",
+            Content = questionInfo.Question,
+            Timestamp = DateTime.Now,
+            IsAskUserPrompt = true,
+            IsAskUserActive = true,
+            AskUserQuestionId = questionInfo.QuestionId,
+            AskUserQuestionType = questionInfo.QuestionType,
+            AskUserOptions = questionInfo.Options,
+            AskUserContextSummary = questionInfo.ContextSummary
+        };
+
+        Messages.Add(promptMsg);
+        _pendingAskUserPromptMsg = promptMsg;
+        CommandManager.InvalidateRequerySuggested();
+    }
+
+    private void DeactivateAskUserPromptMessage(string? answerText)
+    {
+        if (_pendingAskUserPromptMsg == null) return;
+
+        _pendingAskUserPromptMsg.IsAskUserActive = false;
+        var displayAnswer = answerText == "__skip__"
+            ? "让 AI 自行决定"
+            : answerText?.Trim();
+        if (!string.IsNullOrWhiteSpace(displayAnswer))
+        {
+            _pendingAskUserPromptMsg.Content = $"{_pendingAskUserPromptMsg.Content.TrimEnd()}\n\n---\n已收到你的回复：{displayAnswer}";
+        }
+        else
+        {
+            _pendingAskUserPromptMsg.NotifyContentChanged();
+        }
+
+        CommandManager.InvalidateRequerySuggested();
+    }
 
     public async void RespondToQuestionAsync(string userResponse)
     {
@@ -497,6 +577,31 @@ public class ChatViewModel : INotifyPropertyChanged
             return;
         }
         _isResponding = true;
+        if (!await _aiLoopGate.WaitAsync(0))
+        {
+            Logger.Warning("AI 工具循环正在执行，忽略重复回答");
+            _isResponding = false;
+            return;
+        }
+
+        var request = StartContinuationRequest();
+        IsLoading = true;
+        StatusMessage = "AI 继续执行中…";
+        CommandManager.InvalidateRequerySuggested();
+        DeactivateAskUserPromptMessage(userResponse);
+        AskUserDraftResponse = string.Empty;
+
+        // ★ 在 try 之前捕获 pending 引用，供工具循环使用 ★
+        var pendingMsgs = _pendingMessages;
+        var continuationAiMsg = new ChatMessage
+        {
+            Role = MessageRole.Assistant,
+            Content = "",
+            Timestamp = DateTime.Now
+        };
+        Messages.Add(continuationAiMsg);
+        UserQuestionInfo? pausedQuestion = null;
+
         try
         {
             // 处理"跳过"指令
@@ -506,89 +611,133 @@ public class ChatViewModel : INotifyPropertyChanged
             }
 
             Logger.Info($"用户回答了 AI 提问: {userResponse?.Truncate(100)}");
-            IsAwaitingUserInput = false;
-            PendingAskUserQuestion = null;
+            // ★ 不在这里清除暂停状态：在 ContinueToolLoopAsync 运行期间保持
+            // IsAwaitingUserInput = true，防止 UI 提前隐藏问题面板导致用户点击被忽略 ★
 
-            // 通知 UI 更新
-            OnPropertyChanged(nameof(IsAwaitingUserInput));
-            OnPropertyChanged(nameof(PendingAskUserQuestion));
-
-            // 将用户回答作为 tool_result 添加到消息历史
-            _pendingMessages.Add(new ChatMessage
+            // 将用户回答写回 ask_user 的 tool_result；暂停时已写入占位 Tool 消息，优先替换它
+            var askUserToolResult = pendingMsgs.LastOrDefault(m =>
+                m.Role == MessageRole.Tool &&
+                m.ToolName == "ask_user" &&
+                m.Content == "等待用户回答…");
+            if (askUserToolResult != null)
             {
-                Role = MessageRole.Tool,
-                ToolCallId = _pendingToolCallId ?? "",
-                ToolName = "ask_user",
-                Content = userResponse ?? "",
-                Timestamp = DateTime.Now
-            });
+                askUserToolResult.Content = userResponse ?? "";
+                askUserToolResult.Timestamp = DateTime.Now;
+            }
+            else
+            {
+                pendingMsgs.Add(new ChatMessage
+                {
+                    Role = MessageRole.Tool,
+                    ToolCallId = _pendingToolCallId ?? "",
+                    ToolName = "ask_user",
+                    Content = userResponse ?? "",
+                    Timestamp = DateTime.Now
+                });
+            }
 
-            // 继续执行工具循环（使用同上的 mutableMessages + 用户回答）
-            // 传入 _sendCts?.Token 以支持新请求取消旧续流
-            await ContinueToolLoopAsync(_pendingMessages, _pendingAiMsg,
-                _sendCts?.Token ?? CancellationToken.None);
+            // 继续执行工具循环（使用同上的 mutableMessages + 用户回答），续流内容显示在 [AIneedhelp] 之后
+            pausedQuestion = await ContinueToolLoopAsync(pendingMsgs, continuationAiMsg, request.Cts.Token);
+
+            // ★ 如果工具循环因 ask_user 再次暂停，在此更新新问题 ★
+            // 如果工具循环正常结束（pausedQuestion == null），在此清除暂停状态
+            // 必须在 finally 块之前完成，确保 finally 不会过早清空 _pending*
+            if (pausedQuestion != null)
+            {
+                PendingAskUserQuestion = pausedQuestion;
+                _pendingMessages = pendingMsgs;
+                _pendingAiMsg = continuationAiMsg;
+                _pendingAiMsgInitialLength = continuationAiMsg.Content.Length;
+                // _pendingToolCallId 需要从消息中重新提取
+                var lastToolMsg = pendingMsgs.LastOrDefault(m => m.Role == MessageRole.Tool);
+                _pendingToolCallId = lastToolMsg?.ToolCallId;
+                ShowAskUserPromptMessage(pausedQuestion);
+                OnPropertyChanged(nameof(PendingAskUserQuestion));
+                OnPropertyChanged(nameof(CanRespondToAskUser));
+                StatusMessage = "AI 正在等待你的回答…";
+                // IsAwaitingUserInput 保持 true（已在 ContinueToolLoopAsync 运行期间保持）
+            }
+            else
+            {
+                // 工具循环正常结束 — 清除暂停状态
+                IsAwaitingUserInput = false;
+                PendingAskUserQuestion = null;
+                _pendingMessages = null;
+                _pendingAiMsg = null;
+                _pendingToolCallId = null;
+                _pendingAskUserPromptMsg = null;
+                AskUserDraftResponse = string.Empty;
+                OnPropertyChanged(nameof(IsAwaitingUserInput));
+                OnPropertyChanged(nameof(PendingAskUserQuestion));
+                OnPropertyChanged(nameof(CanRespondToAskUser));
+            }
         }
         finally
         {
+            if (request.Generation == _sendGeneration)
+                _sendCts = null;
+            request.Cts.Dispose();
+            _aiLoopGate.Release();
             _isResponding = false;
-            _pendingMessages = null;
-            _pendingAiMsg = null;
-            _pendingToolCallId = null;
+            OnPropertyChanged(nameof(CanRespondToAskUser));
+            CommandManager.InvalidateRequerySuggested();
         }
     }
 
-    /// <summary>继续被 ask_user 暂停的工具循环</summary>
-    private async Task ContinueToolLoopAsync(List<ChatMessage> messages, ChatMessage aiMsg,
+    /// <summary>
+    /// 返回 UserQuestionInfo 表示 ask_user 暂停（Caller 需负责设置 IsAwaitingUserInput / _pending* 状态）；
+    /// null 表示工具循环正常结束。
+    /// </summary>
+    private async Task<UserQuestionInfo?> ContinueToolLoopAsync(List<ChatMessage> messages, ChatMessage aiMsg,
         CancellationToken ct = default)
     {
-        var uiContext = SynchronizationContext.Current;
-        var lastUiUpdate = Stopwatch.StartNew();
+        UserQuestionInfo? pausedResult = null;
+        var initialLength = _pendingAiMsgInitialLength > 0 ? _pendingAiMsgInitialLength : aiMsg.Content.Length;
+        var chunkCount = 0;
+        var appendedChars = 0;
 
-        int GetUiThrottleMs(int contentLength) => contentLength switch
-        {
-            < 500 => 80,
-            < 2000 => 150,
-            < 5000 => 300,
-            < 12000 => 600,
-            _ => 1200
-        };
+        Logger.Debug("[Function] ChatViewModel::ContinueToolLoopAsync start");
 
         try
         {
             await foreach (var chunk in _aiClient.ExecuteConversationAsync(
                     messages, ExecuteAiToolAsync, ct: ct))
             {
-                // 检查是否是 ask_user 暂停信号
+                // __ASK_USER_PAUSED__: 不在这里设置状态，改为捕获后返回给调用方处理
+                // 避免被调用方（RespondToQuestionAsync）的 finally 块过早清空 _pending*
                 if (chunk.StartsWith("__ASK_USER_PAUSED__:"))
                 {
                     var json = chunk["__ASK_USER_PAUSED__:".Length..];
                     try
                     {
-                        var questionInfo = System.Text.Json.JsonSerializer.Deserialize<UserQuestionInfo>(json);
-                        if (questionInfo != null)
-                        {
-                            IsAwaitingUserInput = true;
-                            PendingAskUserQuestion = questionInfo;
-                            _pendingMessages = messages;
-                            _pendingAiMsg = aiMsg;
-                            _pendingAiMsgInitialLength = aiMsg.Content.Length;
-                            Logger.Info($"AI 提问暂停: {questionInfo.Question}");
-                            uiContext?.Post(_ => OnPropertyChanged(nameof(IsAwaitingUserInput)), null);
-                            uiContext?.Post(_ => OnPropertyChanged(nameof(PendingAskUserQuestion)), null);
-                            return; // 暂停，等待用户回答
-                        }
+                        var qi = JsonSerializer.Deserialize<UserQuestionInfo>(json);
+                        if (qi != null) pausedResult = qi;
                     }
-                    catch { }
+                    catch (JsonException ex)
+                    {
+                        Logger.Warning($"解析 ask_user 续流暂停信号失败: {ex.Message}");
+                    }
                     continue;
                 }
 
                 aiMsg.AppendContent(chunk);
-                var throttleMs = GetUiThrottleMs(aiMsg.Content.Length);
-                if (lastUiUpdate.ElapsedMilliseconds >= throttleMs)
+                chunkCount++;
+                appendedChars += chunk.Length;
+            }
+
+            if (pausedResult == null)
+            {
+                if (chunkCount == 0 && aiMsg.Content.Length <= initialLength)
                 {
-                    aiMsg.NotifyContentChanged();
-                    lastUiUpdate.Restart();
+                    aiMsg.AppendContent("\n\n[结论]\n⚠️ AI 恢复后未返回最终结论，请重试。");
+                    Logger.Warning("续流正常结束但没有收到新的文本内容");
                 }
+
+                FinalizeAssistantMessage(aiMsg);
+            }
+            else
+            {
+                aiMsg.NotifyContentChanged();
             }
         }
         catch (OperationCanceledException)
@@ -598,14 +747,28 @@ public class ChatViewModel : INotifyPropertyChanged
         catch (Exception ex)
         {
             Logger.Exception("续流失败", ex);
-            aiMsg.AppendContent($"\n\n⚠️ AI 恢复失败：{ex.Message}");
+            aiMsg.AppendContent($"\n\n[结论]\n⚠️ AI 恢复失败：{ex.Message}");
+            aiMsg.NotifyContentChanged();
         }
         finally
         {
-            aiMsg.NotifyContentChanged();
-            StatusMessage = "就绪";
+            StatusMessage = pausedResult != null ? "AI 正在等待你的回答…" : "就绪";
             IsLoading = false;
+            Logger.Info($"续流完成: paused={pausedResult != null}, chunks={chunkCount}, chars={appendedChars}, total={aiMsg.Content.Length}");
+            Logger.Debug($"[Function] ChatViewModel::ContinueToolLoopAsync end — paused={pausedResult != null}");
         }
+
+        // 同步工具循环中自动追加的纯文本消息（过滤 Tool 和带 ToolCalls 的 Assistant）
+        var resumedExistingIds = new HashSet<Guid>(Messages.Select(m => m.Id));
+        foreach (var msg in messages)
+        {
+            if (resumedExistingIds.Contains(msg.Id)) continue;
+            if (msg.Role == MessageRole.Tool) continue;
+            if (msg is { Role: MessageRole.Assistant, HasToolCalls: true }) continue;
+            Messages.Add(msg);
+        }
+
+        return pausedResult; // null = 正常结束；UserQuestionInfo = ask_user 暂停
     }
 
     // ====== ExecuteAiToolAsync（修改——支持 ask_user） ======
@@ -678,15 +841,32 @@ public class ChatViewModel : INotifyPropertyChanged
         {
             var items = GetTodoItems(args);
             var summary = GetArg<string>(args, "summary") ?? $"已更新 {items.Count} 个任务";
+            if (items.Count == 0)
+            {
+                Logger.Warning("update_todo 收到空任务清单，已拒绝清空 UI");
+                return "❌ update_todo 参数无效：items 不能为空。请先将用户任务拆分为 2-6 个可执行子任务，并一次性传入完整清单。";
+            }
 
             RunOnUiThread(() =>
             {
+                var existingMap = TodoItems.ToDictionary(x => x.Id, x => x);
                 TodoItems.Clear();
                 foreach (var item in items)
+                {
+                    // 合并策略：如果该 ID 的任务已存在且新 status 为默认 pending，则保留原有状态
+                    // 防止 AI 未发送 status 字段时把已完成的任务误重置为待办
+                    if (existingMap.TryGetValue(item.Id, out var existing) && item.Status == "pending")
+                    {
+                        item.Status = existing.Status;
+                    }
                     TodoItems.Add(item);
+                }
                 OnPropertyChanged(nameof(TodoItems));
                 StatusMessage = $"🧭 {summary}";
             });
+
+            _contextBuilder.RecordRuntimeToolEvidence("update_todo");
+            _contextBuilder.RuntimeHasTodoItems = true;
 
             Logger.Info($"update_todo: {summary} ({items.Count}项)");
             return $"✅ Todo list updated: {summary}";
@@ -703,8 +883,14 @@ public class ChatViewModel : INotifyPropertyChanged
             var plan = GetArg<string>(args, "plan") ?? "开始执行子任务";
             var exists = RunOnUiThread(() => TodoItems.Any(x => x.Id == id));
             if (!exists)
+            {
                 Logger.Warning($"start_subtask 收到未在完整清单中预先登记的子任务: {id} — {title}");
+                return $"❌ start_subtask 未找到子任务：{id}。必须先通过 update_todo 一次性建立完整任务清单，再开始第一个子任务。";
+            }
             UpdateTodoItem(id, title, "in_progress", plan);
+            _contextBuilder.RecordRuntimeToolEvidence("start_subtask");
+            _contextBuilder.RuntimeActiveSubtaskId = id;
+
             var msg = $"▶️ 开始子任务：{title}。执行前已压缩此前上下文。计划：{plan}";
             Logger.Info($"start_subtask: {msg}");
             return $"__SUBTASK_CONTEXT_COMPRESSED__:{msg}";
@@ -716,7 +902,9 @@ public class ChatViewModel : INotifyPropertyChanged
             if (string.IsNullOrWhiteSpace(id))
                 return "❌ finish_subtask 参数无效：id 不能为空。";
 
-            var status = NormalizeTodoStatus(GetArg<string>(args, "status"));
+            // finish_subtask 默认表示完成，未传 status 时默认为 completed 而非 pending
+            var rawStatus = GetArg<string>(args, "status") ?? "completed";
+            var status = NormalizeTodoStatus(rawStatus);
             var summary = GetArg<string>(args, "summary") ?? "（无总结）";
             var nextStep = GetArg<string>(args, "next_step");
             var title = RunOnUiThread(() => TodoItems.FirstOrDefault(x => x.Id == id)?.Title);
@@ -724,10 +912,15 @@ public class ChatViewModel : INotifyPropertyChanged
                 return $"❌ finish_subtask 未找到子任务：{id}。请先通过 update_todo 建立完整任务清单。";
 
             UpdateTodoItem(id, title, status, summary);
+            _contextBuilder.RecordRuntimeToolEvidence("finish_subtask");
+            var nextTodo = status == "completed" ? TryStartNextPendingTodo(id, nextStep) : null;
+            _contextBuilder.RuntimeActiveSubtaskId = nextTodo?.Id;
 
             var msg = status == "blocked"
                 ? $"❌ 子任务受阻：{title}。原因：{summary}。请用户手动处理：{nextStep ?? "请检查当前页面或操作环境。"}"
-                : $"✅ 子任务完成：{title}。结果：{summary}";
+                : nextTodo != null
+                    ? $"✅ 子任务完成：{title}。结果：{summary}\n▶️ 已自动开始下一子任务：{nextTodo.Title}。计划：{nextTodo.Notes}"
+                    : $"✅ 子任务完成：{title}。结果：{summary}";
             Logger.Info($"finish_subtask: {msg}");
             return msg;
         }
@@ -904,28 +1097,72 @@ public class ChatViewModel : INotifyPropertyChanged
 
     /// <summary>当前请求的取消令牌源（新请求会取消上一个未完成的请求）</summary>
     private CancellationTokenSource? _sendCts;
+    private int _sendGeneration;
+
+    private (CancellationTokenSource Cts, int Generation) StartSendRequest()
+    {
+        _sendCts?.Cancel();
+        var cts = new CancellationTokenSource();
+        var generation = ++_sendGeneration;
+        _sendCts = cts;
+        return (cts, generation);
+    }
+
+    private (CancellationTokenSource Cts, int Generation) StartContinuationRequest()
+    {
+        var cts = new CancellationTokenSource();
+        var generation = ++_sendGeneration;
+        _sendCts = cts;
+        return (cts, generation);
+    }
+
+    /// <summary>取消当前正在进行的 AI 流式请求（由 MainWindow 关闭时调用）</summary>
+    public void CancelActiveRequest()
+    {
+        if (_sendCts == null) return;
+        Logger.Debug("取消当前 AI 请求");
+        _sendCts.Cancel();
+        _sendCts = null;
+        _sendGeneration++;
+    }
 
     public async void SendAsync()
     {
         var text = InputText?.Trim();
         if (string.IsNullOrWhiteSpace(text) || IsLoading) return;
 
+        if (IsAwaitingUserInput && _pendingMessages != null && _pendingAiMsg != null)
+        {
+            InputText = string.Empty;
+            IsLoading = true;
+            StatusMessage = "AI 继续执行中…";
+            RespondToQuestionAsync(text);
+            return;
+        }
+
+        var loopGateHeld = await _aiLoopGate.WaitAsync(0);
+        if (!loopGateHeld)
+        {
+            Logger.Warning("AI 工具循环正在执行，忽略重复发送");
+            return;
+        }
+
         IsAwaitingUserInput = false;
         PendingAskUserQuestion = null;
         _pendingMessages = null;
         _pendingAiMsg = null;
         _pendingToolCallId = null;
-        OnPropertyChanged(nameof(IsAwaitingUserInput));
-        OnPropertyChanged(nameof(PendingAskUserQuestion));
+        _pendingAskUserPromptMsg = null;
+        AskUserDraftResponse = string.Empty;
         _isResponding = false;
         OnPropertyChanged(nameof(IsAwaitingUserInput));
         OnPropertyChanged(nameof(PendingAskUserQuestion));
+        OnPropertyChanged(nameof(CanRespondToAskUser));
+        CommandManager.InvalidateRequerySuggested();
 
         // 取消上次未完成的请求，防止并发请求
-        _sendCts?.Cancel();
-        _sendCts?.Dispose();
-        _sendCts = new CancellationTokenSource();
-        var ct = _sendCts.Token;
+        var request = StartSendRequest();
+        var ct = request.Cts.Token;
 
         Logger.Info($"══════ AI 请求 ══════");
         Logger.Info($"用户输入: {text}");
@@ -1001,12 +1238,15 @@ public class ChatViewModel : INotifyPropertyChanged
             if (hasTools)
             {
                 // ★★★ 支持工具调用的完整循环 ★★★
-                // 使用可变的 List 以支持 ExecuteConversationAsync 的内部追加
-                var mutableMessages = Messages.ToList();
+                // 使用可变的 List 以支持 ExecuteConversationAsync 的内部追加；过滤 ask_user UI 提示卡片
+                var mutableMessages = BuildApiConversationMessages();
 
                 await foreach (var chunk in _aiClient.ExecuteConversationAsync(
                         mutableMessages, ExecuteAiToolAsync, ct: ct))
                     {
+                        if (request.Generation != _sendGeneration || ct.IsCancellationRequested)
+                            throw new OperationCanceledException(ct);
+
                         // ★★★ 检测 ask_user 暂停信号 ★★★
                         if (chunk.StartsWith("__ASK_USER_PAUSED__:"))
                         {
@@ -1022,9 +1262,11 @@ public class ChatViewModel : INotifyPropertyChanged
                                     _pendingAiMsg = aiMsg;
                                     _pendingAiMsgInitialLength = aiMsg.Content.Length;
                                     _pendingToolCallId = null;
+                                    ShowAskUserPromptMessage(questionInfo);
                                     Logger.Info($"AI 向用户提问: {questionInfo.Question}");
                                     uiContext?.Post(_ => OnPropertyChanged(nameof(IsAwaitingUserInput)), null);
                                     uiContext?.Post(_ => OnPropertyChanged(nameof(PendingAskUserQuestion)), null);
+                                    uiContext?.Post(_ => OnPropertyChanged(nameof(CanRespondToAskUser)), null);
                                     break; // 跳出 foreach，下面的同步代码仍会执行
                                 }
                             }
@@ -1049,8 +1291,7 @@ public class ChatViewModel : INotifyPropertyChanged
                     }
 
                 // 将工具循环中自动追加的 assistant/tool 消息同步到 ObservableCollection
-                // ★★★ 只同步纯文本消息（跳过 Tool 角色 和 带 ToolCalls 的 Assistant 消息），避免 UI 显示工具调用中间过程 ★★★
-                if (!IsAwaitingUserInput)
+                // ★★★ 严格只同步纯文本回复：跳过 Tool 角色和带 ToolCalls 的 Assistant 消息 ★★★
                 {
                     var existingIds = new HashSet<Guid>(Messages.Select(m => m.Id));
                     foreach (var msg in mutableMessages)
@@ -1062,9 +1303,17 @@ public class ChatViewModel : INotifyPropertyChanged
                     }
                 }
 
-                aiMsg.ReplaceContentSilently(aiMsg.Content.TrimStart());
-                aiMsg.NotifyContentChanged();
-                StatusMessage = IsAwaitingUserInput ? "AI 正在等待你的回答…" : "就绪";
+                // 刷新分区显示；ask_user 暂停不是最终结论
+                if (IsAwaitingUserInput)
+                {
+                    aiMsg.NotifyContentChanged();
+                }
+                else
+                {
+                    FinalizeAssistantMessage(aiMsg);
+                    TryFinalizeTodoAfterAssistantReply(aiMsg.Content);
+                }
+                StatusMessage = IsAwaitingUserInput ? "AI 正在等待你的回答…" : GetStatusMessageAfterToolLoop(aiMsg.Content);
                 Logger.Info($"AI 请求完成（工具循环）: {chunkCount} 个数据块, {aiMsg.Content.Length} 字符");
                 if (aiMsg.Content.Length > maxContentLogged + 3)
                 {
@@ -1080,6 +1329,9 @@ public class ChatViewModel : INotifyPropertyChanged
                 // 无工具 — 原始流式文本路径
                 await foreach (var chunk in _aiClient.StreamMessageAsync(Messages, ct))
                 {
+                    if (request.Generation != _sendGeneration || ct.IsCancellationRequested)
+                        throw new OperationCanceledException(ct);
+
                     aiMsg.AppendContent(chunk);
                     chunkCount++;
 
@@ -1095,8 +1347,8 @@ public class ChatViewModel : INotifyPropertyChanged
                     }
                 }
 
-                aiMsg.ReplaceContentSilently(aiMsg.Content.TrimStart());
-                aiMsg.NotifyContentChanged();
+                // 兜底清洗
+                FinalizeAssistantMessage(aiMsg);
                 StatusMessage = "就绪";
                 Logger.Info($"AI 请求完成: {chunkCount} 个数据块, {aiMsg.Content.Length} 字符");
                 if (aiMsg.Content.Length > maxContentLogged + 3)
@@ -1112,14 +1364,17 @@ public class ChatViewModel : INotifyPropertyChanged
         catch (OperationCanceledException)
         {
             Logger.Info("AI 请求已被取消");
-            aiMsg.AppendContent("\n\n⏸️ 请求已被取消");
-            aiMsg.NotifyContentChanged();
-            StatusMessage = "就绪";
+            if (request.Generation == _sendGeneration)
+            {
+                aiMsg.AppendContent("\n\n[结论]\n⏸️ 请求已被取消");
+                aiMsg.NotifyContentChanged();
+                StatusMessage = "就绪";
+            }
         }
         catch (Exception ex)
         {
             Logger.Exception("AI 流式请求失败", ex);
-            var errMsg = $"\n\n⚠️ 请求失败：{ex.Message}";
+            var errMsg = $"\n\n[结论]\n⚠️ 请求失败：{ex.Message}";
             aiMsg.AppendContent(errMsg);
             aiMsg.NotifyContentChanged();
             StatusMessage = "错误";
@@ -1129,15 +1384,21 @@ public class ChatViewModel : INotifyPropertyChanged
         }
         finally
         {
-            _sendCts?.Dispose();
-            _sendCts = null;
-            IsLoading = false;
-            CommandManager.InvalidateRequerySuggested();
-            if (!IsAwaitingUserInput)
+            if (request.Generation == _sendGeneration)
             {
-                UpdateTokenEstimate();
-                AutoSave();
+                _sendCts = null;
+                IsLoading = false;
+                CommandManager.InvalidateRequerySuggested();
+                if (!IsAwaitingUserInput)
+                {
+                    UpdateTokenEstimate();
+                    AutoSave();
+                }
             }
+
+            request.Cts.Dispose();
+            if (loopGateHeld)
+                _aiLoopGate.Release();
         }
     }
 
@@ -1146,18 +1407,23 @@ public class ChatViewModel : INotifyPropertyChanged
     public void NewConversation()
     {
         Logger.Info("新建对话");
-        _sendCts?.Cancel();
+        CancelActiveRequest();
         IsLoading = false;
         IsAwaitingUserInput = false;
         PendingAskUserQuestion = null;
         _pendingMessages = null;
         _pendingAiMsg = null;
         _pendingToolCallId = null;
+        _pendingAskUserPromptMsg = null;
+        AskUserDraftResponse = string.Empty;
         OnPropertyChanged(nameof(IsAwaitingUserInput));
         OnPropertyChanged(nameof(PendingAskUserQuestion));
+        OnPropertyChanged(nameof(CanRespondToAskUser));
+        CommandManager.InvalidateRequerySuggested();
         _currentConversationId = Guid.NewGuid().ToString("N");
         Messages.Clear();
         TodoItems.Clear();
+        _contextBuilder.ClearRuntimeState();
         AddSystemMessage("新的对话已开始。有什么需要帮忙的吗？我是 Bermain（板儿面）。");
         RefreshConversationList();
         // GC.Collect() 已移除：在 UI 线程上触发 Gen2 阻塞回收会导致界面卡死
@@ -1167,17 +1433,22 @@ public class ChatViewModel : INotifyPropertyChanged
     public void ClearConversation()
     {
         Logger.Debug("清空当前对话");
-        _sendCts?.Cancel();
+        CancelActiveRequest();
         IsLoading = false;
         IsAwaitingUserInput = false;
         PendingAskUserQuestion = null;
         _pendingMessages = null;
         _pendingAiMsg = null;
         _pendingToolCallId = null;
+        _pendingAskUserPromptMsg = null;
+        AskUserDraftResponse = string.Empty;
         OnPropertyChanged(nameof(IsAwaitingUserInput));
         OnPropertyChanged(nameof(PendingAskUserQuestion));
+        OnPropertyChanged(nameof(CanRespondToAskUser));
+        CommandManager.InvalidateRequerySuggested();
         Messages.Clear();
         TodoItems.Clear();
+        _contextBuilder.ClearRuntimeState();
         AddSystemMessage("对话已清空。");
     }
 
@@ -1190,15 +1461,19 @@ public class ChatViewModel : INotifyPropertyChanged
         }
 
         Logger.Info($"加载对话: {convId}");
-        _sendCts?.Cancel();
+        CancelActiveRequest();
         IsLoading = false;
         IsAwaitingUserInput = false;
         PendingAskUserQuestion = null;
         _pendingMessages = null;
         _pendingAiMsg = null;
         _pendingToolCallId = null;
+        _pendingAskUserPromptMsg = null;
+        AskUserDraftResponse = string.Empty;
         OnPropertyChanged(nameof(IsAwaitingUserInput));
         OnPropertyChanged(nameof(PendingAskUserQuestion));
+        OnPropertyChanged(nameof(CanRespondToAskUser));
+        CommandManager.InvalidateRequerySuggested();
         var msgs = ConversationService.LoadConversation(convId);
         if (msgs == null)
         {
@@ -1209,7 +1484,10 @@ public class ChatViewModel : INotifyPropertyChanged
         _currentConversationId = convId;
         Messages.Clear();
         TodoItems.Clear();
-        foreach (var m in msgs) Messages.Add(m);
+        _contextBuilder.ClearRuntimeState();
+        foreach (var m in msgs)
+            if (m.Role != MessageRole.Tool)
+                Messages.Add(m);
         StatusMessage = $"已加载 {msgs.Count} 条消息";
         UpdateTokenEstimate();
         Logger.Info($"对话已加载: {msgs.Count} 条消息, {msgs.Sum(m => m.Content.Length)} 字符");
@@ -1423,6 +1701,49 @@ public class ChatViewModel : INotifyPropertyChanged
         return default;
     }
 
+    private string GetStatusMessageAfterToolLoop(string content)
+    {
+        if (content.Contains("当前任务尚未完成", StringComparison.OrdinalIgnoreCase))
+            return "任务未完成，等待继续…";
+
+        return "就绪";
+    }
+
+    private void TryFinalizeTodoAfterAssistantReply(string content)
+    {
+        if (string.IsNullOrWhiteSpace(content))
+            return;
+
+        RunOnUiThread(() =>
+        {
+            if (TodoItems.Count == 0 || TodoItems.Any(x => x.Status == "blocked"))
+                return;
+
+            var hasFinalAnswer = content.Contains("总结", StringComparison.OrdinalIgnoreCase)
+                || content.Contains("重要", StringComparison.OrdinalIgnoreCase)
+                || content.Contains("已完成", StringComparison.OrdinalIgnoreCase)
+                || content.Contains("以下", StringComparison.OrdinalIgnoreCase)
+                || content.Contains("found", StringComparison.OrdinalIgnoreCase)
+                || content.Contains("important", StringComparison.OrdinalIgnoreCase);
+            if (!hasFinalAnswer)
+                return;
+
+            var changed = false;
+            foreach (var item in TodoItems.Where(x => x.Status != "completed").ToList())
+            {
+                item.Status = "completed";
+                if (string.IsNullOrWhiteSpace(item.Notes))
+                    item.Notes = "AI 已返回最终结果。";
+                changed = true;
+            }
+
+            if (!changed) return;
+            _contextBuilder.RuntimeActiveSubtaskId = null;
+            OnPropertyChanged(nameof(TodoItems));
+            Logger.Info("最终回复后自动将未完成任务清单标记为 completed");
+        });
+    }
+
     private static List<AiTodoItem> GetTodoItems(Dictionary<string, object?> args)
     {
         var items = GetArg<List<AiTodoItem>>(args, "items");
@@ -1459,6 +1780,40 @@ public class ChatViewModel : INotifyPropertyChanged
             item.Notes = notes;
             OnPropertyChanged(nameof(TodoItems));
             StatusMessage = $"🧭 {title}：{item.StatusLabel}";
+        });
+    }
+
+    private AiTodoItem? TryStartNextPendingTodo(string completedId, string? nextStep)
+    {
+        return RunOnUiThread(() =>
+        {
+            var completedIndex = TodoItems
+                .Select((item, index) => new { item, index })
+                .FirstOrDefault(x => string.Equals(x.item.Id, completedId, StringComparison.OrdinalIgnoreCase))
+                ?.index ?? -1;
+
+            if (completedIndex < 0)
+                return null;
+
+            var next = TodoItems
+                .Skip(completedIndex + 1)
+                .FirstOrDefault(x => x.Status == "pending");
+            if (next == null)
+                return null;
+
+            var plan = string.IsNullOrWhiteSpace(nextStep) ? "继续执行下一子任务" : nextStep.Trim();
+            next.Status = "in_progress";
+            next.Notes = plan;
+            OnPropertyChanged(nameof(TodoItems));
+            StatusMessage = $"🧭 {next.Title}：{next.StatusLabel}";
+            Logger.Info($"finish_subtask: 自动开始下一子任务 {next.Id} — {next.Title}");
+            return new AiTodoItem
+            {
+                Id = next.Id,
+                Title = next.Title,
+                Status = next.Status,
+                Notes = next.Notes
+            };
         });
     }
 

@@ -13,13 +13,13 @@
         <local:MessageRoleBgConverter x:Key="RoleBgConv"/>
         <local:MessageRoleBorderConverter x:Key="RoleBorderConv"/>
         <conv:MarkdownToFlowDocumentConverter x:Key="MdConv"/>
+        <BooleanToVisibilityConverter x:Key="BoolToVisibilityConv"/>
     </UserControl.Resources>
 
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
-            <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
@@ -146,7 +146,8 @@
                                         CornerRadius="8"
                                         Padding="10,8"
                                         BorderBrush="{Binding Role, Converter={StaticResource RoleBorderConv}}"
-                                        BorderThickness="1,1,1,1">
+                                        BorderThickness="1,1,1,1"
+                                        Visibility="{Binding IsVisibleInChat, Converter={StaticResource BoolToVisibilityConv}}">
                                     <Grid>
                                         <Grid.RowDefinitions>
                                             <RowDefinition Height="Auto"/>
@@ -174,15 +175,141 @@
                                         </Grid>
 
                                         <!-- 消息内容（Markdown 渲染） -->
-                                        <FlowDocumentScrollViewer Grid.Row="1"
-                                            Document="{Binding Content, Converter={StaticResource MdConv}}"
-                                            Background="Transparent"
-                                            IsTabStop="False"
-                                            VerticalScrollBarVisibility="Hidden"
-                                            HorizontalScrollBarVisibility="Disabled"
-                                            Padding="0"
-                                            MaxHeight="600"
-                                            FontFamily="Segoe UI"/>
+                                        <StackPanel Grid.Row="1">
+                                            <!-- 非普通 AI 消息：保持原始单块显示；ask_user 提示不走“结论”渲染 -->
+                                            <FlowDocumentScrollViewer
+                                                Document="{Binding Content, Converter={StaticResource MdConv}}"
+                                                Visibility="{Binding IsPlainContentMessage, Converter={StaticResource BoolToVisibilityConv}}"
+                                                Background="Transparent"
+                                                IsTabStop="False"
+                                                VerticalScrollBarVisibility="Hidden"
+                                                HorizontalScrollBarVisibility="Disabled"
+                                                Padding="0"
+                                                MaxHeight="600"
+                                                FontFamily="Segoe UI"/>
+
+                                            <!-- AI 消息：思考过程作为主输出，结论仅在最终阶段显示 -->
+                                            <StackPanel Visibility="{Binding IsRegularAssistant, Converter={StaticResource BoolToVisibilityConv}}">
+                                                <Expander IsExpanded="True"
+                                                          Visibility="{Binding HasThinkingContent, Converter={StaticResource BoolToVisibilityConv}}"
+                                                          Margin="0,0,0,8"
+                                                          Foreground="#AAA"
+                                                          Background="#1E1E24">
+                                                    <Expander.Header>
+                                                        <TextBlock Text="[思考过程]" Foreground="#AAA" FontSize="11" FontWeight="SemiBold"/>
+                                                    </Expander.Header>
+                                                    <Border Background="#1E1E24" BorderBrush="#33333A" BorderThickness="1" CornerRadius="5" Padding="8,6" Margin="0,4,0,0">
+                                                        <FlowDocumentScrollViewer
+                                                            Document="{Binding ThinkingContent, Converter={StaticResource MdConv}}"
+                                                            Background="Transparent"
+                                                            IsTabStop="False"
+                                                            VerticalScrollBarVisibility="Auto"
+                                                            HorizontalScrollBarVisibility="Disabled"
+                                                            Padding="0"
+                                                            MaxHeight="260"
+                                                            FontFamily="Segoe UI"/>
+                                                    </Border>
+                                                </Expander>
+
+                                                <TextBlock Text="[结论]"
+                                                           Foreground="#DDEEDD"
+                                                           FontSize="11"
+                                                           FontWeight="SemiBold"
+                                                           Margin="0,0,0,4"
+                                                           Visibility="{Binding HasConclusionContent, Converter={StaticResource BoolToVisibilityConv}}"/>
+                                                <FlowDocumentScrollViewer
+                                                    Document="{Binding ConclusionContent, Converter={StaticResource MdConv}}"
+                                                    Visibility="{Binding HasConclusionContent, Converter={StaticResource BoolToVisibilityConv}}"
+                                                    Background="Transparent"
+                                                    IsTabStop="False"
+                                                    VerticalScrollBarVisibility="Hidden"
+                                                    HorizontalScrollBarVisibility="Disabled"
+                                                    Padding="0"
+                                                    MaxHeight="600"
+                                                    FontFamily="Segoe UI"/>
+                                            </StackPanel>
+
+                                            <!-- ask_user 内联指引：作为 [AIneedhelp] 提示卡的一部分显示，不走“结论”渲染 -->
+                                            <Border Margin="0,8,0,0" Padding="8,7" CornerRadius="6"
+                                                    Background="#252533" BorderBrush="#0078D4" BorderThickness="1"
+                                                    Visibility="{Binding IsAskUserActive, Converter={StaticResource BoolToVisibilityConv}}">
+                                                <StackPanel>
+                                                    <TextBlock Text="{Binding AskUserContextSummary}"
+                                                               Foreground="#AAA" FontSize="10" TextWrapping="Wrap"
+                                                               Margin="0,0,0,5"/>
+
+                                                    <!-- 多选按钮 -->
+                                                    <ItemsControl ItemsSource="{Binding AskUserOptions}" Margin="0,0,0,6"
+                                                                  Visibility="{Binding IsAskUserMultipleChoice, Converter={StaticResource BoolToVisibilityConv}}">
+                                                        <ItemsControl.ItemTemplate>
+                                                            <DataTemplate>
+                                                                <Border CornerRadius="4" Background="#3A3A45" BorderBrush="#50505A"
+                                                                        BorderThickness="1" Margin="0,2">
+                                                                    <Button Content="{Binding}"
+                                                                            Command="{Binding DataContext.RespondToQuestionCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                                            CommandParameter="{Binding}"
+                                                                            Foreground="#EEE"
+                                                                            Background="Transparent" BorderThickness="0"
+                                                                            Padding="8,4" FontSize="11"
+                                                                            HorizontalAlignment="Stretch"
+                                                                            Cursor="Hand"/>
+                                                                </Border>
+                                                            </DataTemplate>
+                                                        </ItemsControl.ItemTemplate>
+                                                    </ItemsControl>
+
+                                                    <!-- 确认按钮 -->
+                                                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,0,0,6"
+                                                                Visibility="{Binding IsAskUserConfirmation, Converter={StaticResource BoolToVisibilityConv}}">
+                                                        <Border CornerRadius="4" Background="#4A2030" Margin="0,0,6,0">
+                                                            <Button Content="否 / 取消"
+                                                                    Command="{Binding DataContext.RespondToQuestionCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                                    CommandParameter="no"
+                                                                    Foreground="#EEE"
+                                                                    Background="Transparent" BorderThickness="0"
+                                                                    Padding="10,4" FontSize="11" Cursor="Hand"/>
+                                                        </Border>
+                                                        <Border CornerRadius="4" Background="#0078D4">
+                                                            <Button Content="是 / 确认"
+                                                                    Command="{Binding DataContext.RespondToQuestionCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                                    CommandParameter="yes"
+                                                                    Foreground="White"
+                                                                    Background="Transparent" BorderThickness="0"
+                                                                    Padding="10,4" FontSize="11" Cursor="Hand"/>
+                                                        </Border>
+                                                    </StackPanel>
+
+                                                    <!-- 开放问题内联回复 -->
+                                                    <Grid Margin="0,0,0,6"
+                                                          Visibility="{Binding IsAskUserOpenEnded, Converter={StaticResource BoolToVisibilityConv}}">
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="*"/>
+                                                            <ColumnDefinition Width="Auto"/>
+                                                        </Grid.ColumnDefinitions>
+                                                        <Border Grid.Column="0" Background="#1A1A1E" CornerRadius="5"
+                                                                BorderBrush="#3A3A3E" BorderThickness="1" Height="30" Margin="0,0,6,0">
+                                                            <TextBox Text="{Binding DataContext.AskUserDraftResponse, RelativeSource={RelativeSource AncestorType=UserControl}, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                                     Background="Transparent" BorderThickness="0"
+                                                                     Foreground="#EEE" FontSize="11"
+                                                                     Padding="8,0" VerticalAlignment="Center"
+                                                                     CaretBrush="White"/>
+                                                        </Border>
+                                                        <Button Grid.Column="1" Content="回复" Width="48" Height="30"
+                                                                Command="{Binding DataContext.SubmitAskUserDraftCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                                Background="#0078D4" BorderThickness="0"
+                                                                Foreground="White" FontSize="11" Cursor="Hand"/>
+                                                    </Grid>
+
+                                                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                                        <Button Content="跳过（让 AI 自己决定）"
+                                                                Command="{Binding DataContext.SkipQuestionCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                                Background="Transparent" Foreground="#888"
+                                                                BorderThickness="0" Padding="4,2"
+                                                                FontSize="10" Cursor="Hand"/>
+                                                    </StackPanel>
+                                                </StackPanel>
+                                            </Border>
+                                        </StackPanel>
                                     </Grid>
                                 </Border>
                             </DataTemplate>
@@ -239,108 +366,8 @@
             </Border>
         </Grid>
 
-        <!-- ====== AI 提问卡片（ask_user 暂停时显示） ====== -->
-        <Border Grid.Row="2" Background="#2A2A35" Padding="12,10" Margin="8,0,8,6"
-                CornerRadius="8" BorderBrush="#0078D4" BorderThickness="1,0,0,0"
-                x:Name="QuestionCard">
-            <Border.Style>
-                <Style TargetType="Border">
-                    <Setter Property="Visibility" Value="Collapsed"/>
-                    <Style.Triggers>
-                        <DataTrigger Binding="{Binding IsAwaitingUserInput}" Value="True">
-                            <Setter Property="Visibility" Value="Visible"/>
-                        </DataTrigger>
-                    </Style.Triggers>
-                </Style>
-            </Border.Style>
-            <StackPanel>
-                <!-- 标题 -->
-                <TextBlock Text="🤔 AI 需要你的指引"
-                           Foreground="#EEE" FontSize="12" FontWeight="SemiBold"
-                           Margin="0,0,0,6"/>
-
-                <!-- 上下文摘要 -->
-                <TextBlock Text="{Binding PendingAskUserQuestion.ContextSummary}"
-                           Foreground="#AAA" FontSize="10" TextWrapping="Wrap"
-                           Margin="0,0,0,4"/>
-
-                <!-- 问题文本 -->
-                <TextBlock Text="{Binding PendingAskUserQuestion.Question}"
-                           Foreground="#FFF" FontSize="13" TextWrapping="Wrap"
-                           Margin="0,0,0,8"/>
-
-                <!-- 选项按钮（multiple_choice / confirmation） -->
-                <ItemsControl ItemsSource="{Binding PendingAskUserQuestion.Options}"
-                              Margin="0,0,0,6">
-                    <ItemsControl.Style>
-                        <Style TargetType="ItemsControl">
-                            <Setter Property="Visibility" Value="Collapsed"/>
-                            <Style.Triggers>
-                                <DataTrigger Binding="{Binding PendingAskUserQuestion.QuestionType}" Value="multiple_choice">
-                                    <Setter Property="Visibility" Value="Visible"/>
-                                </DataTrigger>
-                            </Style.Triggers>
-                        </Style>
-                    </ItemsControl.Style>
-                    <ItemsControl.ItemTemplate>
-                        <DataTemplate>
-                            <Border CornerRadius="4" Background="#3A3A45" BorderBrush="#50505A"
-                                    BorderThickness="1" Margin="0,2">
-                                <Button Content="{Binding}"
-                                        Command="{Binding DataContext.RespondToQuestionCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
-                                        CommandParameter="{Binding}"
-                                        Foreground="#EEE"
-                                        Background="Transparent" BorderThickness="0"
-                                        Padding="8,4" FontSize="11"
-                                        HorizontalAlignment="Stretch"
-                                        Cursor="Hand"/>
-                            </Border>
-                        </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                </ItemsControl>
-
-                <!-- 确认按钮（confirmation 模式） -->
-                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,0,0,4">
-                    <StackPanel.Style>
-                        <Style TargetType="StackPanel">
-                            <Setter Property="Visibility" Value="Collapsed"/>
-                            <Style.Triggers>
-                                <DataTrigger Binding="{Binding PendingAskUserQuestion.QuestionType}" Value="confirmation">
-                                    <Setter Property="Visibility" Value="Visible"/>
-                                </DataTrigger>
-                            </Style.Triggers>
-                        </Style>
-                    </StackPanel.Style>
-                    <Border CornerRadius="4" Background="#4A2030" Margin="0,0,6,0">
-                        <Button Content="否 / 取消"
-                                Command="{Binding RespondToQuestionCommand}" CommandParameter="no"
-                                Foreground="#EEE"
-                                Background="Transparent" BorderThickness="0"
-                                Padding="10,4" FontSize="11" Cursor="Hand"/>
-                    </Border>
-                    <Border CornerRadius="4" Background="#0078D4">
-                        <Button Content="是 / 确认"
-                                Command="{Binding RespondToQuestionCommand}" CommandParameter="yes"
-                                Foreground="White"
-                                Background="Transparent" BorderThickness="0"
-                                Padding="10,4" FontSize="11" Cursor="Hand"/>
-                    </Border>
-                </StackPanel>
-
-                <!-- 操作按钮 -->
-                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                    <Button Content="跳过 (让 AI 自己决定)"
-                            Command="{Binding SkipQuestionCommand}"
-                            Background="Transparent" Foreground="#888"
-                            BorderThickness="0" Padding="4,2"
-                            FontSize="10" Margin="0,0,8,0"
-                            Cursor="Hand"/>
-                </StackPanel>
-            </StackPanel>
-        </Border>
-
         <!-- ====== 底部输入区 ====== -->
-        <Border Grid.Row="3" Background="#252529" Padding="8,8,8,10"
+        <Border Grid.Row="2" Background="#252529" Padding="8,8,8,10"
                 BorderBrush="#3A3A3E" BorderThickness="0,1,0,0">
             <Grid>
                 <Grid.RowDefinitions>

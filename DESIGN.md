@@ -1,992 +1,493 @@
-# SmartAI Browser Demo — 实际实现设计文档
+# Volcengine ARK AI 配置失败问题解决方案
 
-> 版本：2.0（按当前 Demo 代码重写）  
-> 更新：2026-06-08  
-> 适用代码：`Demo/BrowserDemo/`
+> 版本：1.0  
+> 日期：2026-06-08  
+> 目标代码：`Demo/BrowserDemo/`  
+> 需求来源：`Pro.md`
 
 ---
 
 ## 1. 项目概述
 
-**SmartAI Browser Demo** 是一个 Windows 智能浏览器原型，使用 **C# / .NET 8 / WPF / WebView2** 构建。它把可见浏览器、AI 对话面板、函数调用工具循环整合在同一个桌面应用中，让 AI 助手 **Bermain（板儿面）** 能通过自然语言任务调用浏览器工具，完成打开网页、观察页面、点击、输入、等待、截图、执行 JS、填写表单等操作。
+本方案针对 SmartAI Browser Demo 的 AI 模型配置与连接测试问题：DeepSeek 按官方文档配置后可正常使用，但绑定火山引擎 ARK 相关 API 后提示无法接通。目标用户是需要在本地浏览器 Demo 中切换 DeepSeek、火山引擎 ARK 等模型服务的开发者和测试者。
 
-当前 Demo 的核心不是“完整商业浏览器”，而是一个可运行的 **AI 控制浏览器演示系统**：
+核心价值是把“自定义端点配置错误导致 404 / 协议选择错误导致请求格式不匹配”变成可诊断、可修复、可验证的内置配置能力，避免用户反复试错 endpoint、provider 和 model ID。
 
-- 主窗口显示多标签 WebView2 浏览器；
-- AI 面板独立浮动在主窗口右侧；
-- 用户配置自己的模型 API Key；
-- AI 客户端以 OpenAI-compatible 或 Anthropic-native 协议流式请求模型；
-- 模型返回 Tool Call 后，由本地 WebView2 自动化服务执行；
-- 工具结果回传给模型，模型继续推理，直到输出最终答案或需要用户确认。
+### 1.1 已定位的根因
 
-### 1.1 当前实现与早期蓝图的差异
+根据最新日志与 AI 配置文件，问题不是网络不可达，而是配置与请求路径不匹配：
 
-早期设计中曾规划：
+1. **ARK 旧配置曾保存为 `provider_key = anthropic`**  
+   这会让 `AiClient.IsAnthropicProvider()` 走 Anthropic native `/v1/messages` 请求格式和 `x-api-key` 认证头，而火山引擎 ARK 的常规兼容调用应走 OpenAI-compatible chat completions 格式。
 
-- .NET 9 / Native AOT；
-- ModernWpf；
-- SQLite；
-- DI 容器；
-- WebView2 + 自研 AutomationBridge；
-- 或外部 Chrome + Playwright MCP / CDP；
-- 书签、历史、下载、扩展、隐私模式等完整浏览器功能。
+2. **后续改为 `custom` 后，请求 endpoint 仍然错误**  
+   日志显示连接测试实际请求过：
 
-当前 Demo 实际实现为：
+   ```text
+   https://ark.cn-beijing.volces.com/api/coding
+   https://ark.cn-beijing.volces.com/api/coding/v3
+   ```
 
-- `.NET 8` WPF；
-- 仅 NuGet 依赖 `Microsoft.Web.WebView2`；
-- 无 DI 容器，手动 new 服务；
-- 无 SQLite，设置和会话使用 JSON 文件；
-- 浏览器为嵌入式 WebView2；
-- AI 浏览器工具走 `BrowserAutomationService` + `BrowserAutomationToolRouter`；
-- Playwright MCP / 外部 Chrome CDP 代码仍保留，但当前启动路径不使用；
-- 旧 `WebView2AutomationBridge.cs` 被 `#if false` 整体禁用。
+   服务端返回：
 
----
+   ```text
+   HTTP 404
+   ```
 
-## 2. 技术栈与运行环境
+   对火山方舟 Coding Plan，UI 中应填写官方 OpenAI Base URL，例如：
 
-| 层面 | 当前选择 | 说明 |
-|------|----------|------|
-| 语言 | C# | Nullable + implicit usings |
-| 运行时 | .NET 8 | `net8.0-windows` |
-| UI | WPF | 手写暗色 UI，无 ModernWpf |
-| 浏览器 | WebView2 | 多个 WebView2 控件共享一个 `CoreWebView2Environment` |
-| 自动化 | WebView2 API + JS 注入 | UI Dispatcher 执行 WebView2 调用，JS 负责页面元素快照与 DOM 操作 |
-| AI API | 手写 `HttpClient` SSE | 支持 OpenAI-compatible 和 Anthropic native |
-| 工具协议 | Function Calling / Tool Use | `ToolDefinition` 转换为 OpenAI / Anthropic schema |
-| 数据存储 | JSON 文件 | AI 设置、对话会话 |
-| 日志 | 自研 `Logger` | 控制台、文件、内存缓冲、Trace scope |
-| 构建 | `dotnet build BrowserDemo/BrowserDemo.csproj` | 无 `.sln`，无测试项目 |
+   ```text
+   https://ark.cn-beijing.volces.com/api/coding/v3
+   ```
 
-运行要求：
+3. **当前连接测试日志只记录 HTTP 状态码，不记录响应体摘要**  
+   因此用户只看到“无法接通”，无法判断是 401、403、404、模型名错误还是 endpoint 路径错误。
 
-- Windows 10/11；
-- .NET 8 SDK（带 Windows Desktop workload）；
-- WebView2 Runtime；
-- 使用 AI 功能时需要用户自己的 API Key；
-- Node.js / Playwright MCP 只在测试旧 MCP 路径时需要。
+4. **自定义服务商过于自由，缺少服务商级提示与自动补全**  
+   火山方舟 Coding Plan 官方给的是 OpenAI Base URL：`/api/coding/v3`，而当前手写客户端此前会把配置值当作完整 chat completions endpoint 使用，导致没有自动补上 `/chat/completions`。
 
 ---
 
-## 3. 实际目录结构
+## 2. 技术栈选型
+
+| 层面 | 选择 | 理由 |
+|------|------|------|
+| 编程语言 | C# / .NET 8 | 项目当前为 `net8.0-windows` WPF，保持一致，避免引入新运行时。 |
+| UI 框架 | WPF | 模型配置面板已由 `AiModelSelectionDialog` + `AiSettingsDialog` 实现，继续小范围修改现有 UI。 |
+| HTTP 客户端 | 现有 `HttpClient` / `AiClient` | 当前已支持 OpenAI-compatible 和 Anthropic-native SSE，不需要引入 SDK。 |
+| 配置存储 | 现有 `ai_settings.json` | 已支持多 profile；ARK 只需要 `ProviderKey`、`ApiKey`、`Model`、`Endpoint`，不需要变更存储格式。 |
+| 日志 | 现有 `Logger` | 用于定位连接失败状态码、endpoint、provider、model；只增强失败摘要，不记录敏感 API Key。 |
+| 构建验证 | `dotnet build Demo/BrowserDemo/BrowserDemo.csproj` | 仓库无 `.sln` 和测试项目，构建是最小自动验证。 |
+
+运行环境保持不变：Windows 10/11、.NET 8 SDK、WebView2 Runtime。
+
+---
+
+## 3. 系统架构
+
+本次修复不改变整体架构，只在 AI Provider 配置层和 AI Client 诊断层做增量增强。
+
+```text
+用户打开模型配置
+  ↓
+AiModelSelectionDialog
+  ↓ 添加/编辑 profile
+AiSettingsDialog
+  ├─ ProviderManager.GetAll() 提供服务商列表
+  ├─ 用户选择 Volcengine ARK 或 custom
+  ├─ 校验 / 自动修正 endpoint
+  └─ 返回 AiSettings
+  ↓ 保存
+AiSettingsStore -> ai_settings.json
+  ↓ 使用 / 测试连接
+AiClient
+  ├─ 根据 ProviderKey 选择 OpenAI-compatible 或 Anthropic-native
+  ├─ ConfigureHeaders()
+  ├─ BuildOpenAITestRequest() / BuildOpenAIRequest()
+  └─ Logger 记录状态码与错误响应摘要
+```
+
+### 3.1 核心模块职责
+
+| 模块 | 职责 |
+|------|------|
+| `ProviderManager` | 增加火山引擎 ARK 内置 provider，给出正确默认 endpoint 和模型填写提示。 |
+| `AiSettingsDialog` | 在 UI 中选择 ARK；校验 endpoint；对常见错误路径给出提示或自动修正建议。 |
+| `AiSettingsStore` | 继续按现有 schema 保存 profile，无需修改。 |
+| `AiClient` | ARK 走 OpenAI-compatible 分支；增强连接测试失败日志，记录响应体摘要但不泄露 API Key。 |
+| `Logger` | 复用现有日志能力，无需新组件。 |
+
+### 3.2 架构选择理由
+
+- 不引入火山 SDK：当前客户端只需要标准 chat completions，手写 HTTP 已足够。
+- 不改 `AiSettings` schema：ARK 的差异可由 provider 默认 endpoint 和 UI 校验表达。
+- 不扩展 Anthropic-native 路径：ARK 不是 Anthropic provider，配置成 `anthropic` 是错误来源之一。
+
+---
+
+## 4. 目录结构
+
+本次只修改现有文件，不新增复杂目录。
 
 ```text
 Demo/BrowserDemo/
-├── BrowserDemo.csproj
-├── App.xaml / App.xaml.cs
-├── MainWindow.xaml / MainWindow.xaml.cs
-├── AssemblyInfo.cs
-├── Converters.cs
-├── StringExtensions.cs
-│
 ├── Models/
-│   ├── BrowserViewModel.cs
-│   ├── TabInfo.cs
-│   ├── DownloadItem.cs
-│   ├── ChatMessage.cs
-│   ├── ToolCallData.cs
-│   ├── ToolDefinition.cs
-│   ├── AiSettings.cs
-│   ├── AiSettingsStore.cs
 │   ├── ProviderInfo.cs
-│   ├── AiTodoItem.cs
-│   ├── SkillDefinition.cs              # 旧 record 技能模型
-│   ├── BasicSkillDefinition.cs         # 旧 record 技能模型
-│   ├── CompositeSkillDefinition.cs     # 旧 record 技能模型
-│   ├── StrategySkillDefinition.cs      # 旧 record 技能模型
-│   ├── SkillStep.cs                    # 旧 record 技能模型
-│   └── SkillExecutionResult.cs         # 旧 record 技能模型
-│
-├── ViewModels/
-│   └── ChatViewModel.cs
+│   │   # 增加 volcengine-ark / ARK provider 元数据：默认 endpoint、Badge、示例模型提示
+│   ├── AiSettings.cs
+│   │   # 不修改；继续使用 ProviderKey / ApiKey / Model / Endpoint
+│   └── AiSettingsStore.cs
+│       # 不修改；继续保存 ai_settings.json
 │
 ├── Views/
-│   ├── AiChatPanel.xaml / .cs
-│   ├── AiSecondaryWindow.xaml / .cs
-│   ├── AiModelSelectionDialog.xaml / .cs
-│   ├── AiSettingsDialog.xaml / .cs
-│   └── DownloadsWindow.xaml / .cs
+│   ├── AiSettingsDialog.xaml
+│   │   # 增强 endpoint 提示文案，说明 ARK Coding Plan 应使用 /api/coding/v3 Base URL
+│   └── AiSettingsDialog.xaml.cs
+│       # 增加 ARK/custom endpoint 校验与常见错误提示
 │
-├── Services/
-│   ├── Logger.cs
-│   ├── IAiClient.cs
-│   ├── AiClient.cs
-│   ├── ContextBuilder.cs
-│   ├── ConversationService.cs
-│   ├── DownloadManager.cs
-│   │
-│   ├── BrowserHost/
-│   │   ├── BrowserHostService.cs       # 当前 WebView2 宿主
-│   │   └── ChromeProcessManager.cs     # 旧外部 Chrome/CDP 路径
-│   │
-│   ├── Automation/
-│   │   ├── BrowserAutomationService.cs # 当前浏览器自动化服务
-│   │   ├── BrowserAutomationToolRouter.cs
-│   │   ├── AutomationScripts.cs
-│   │   ├── AdbService.cs
-│   │   └── WebView2AutomationBridge.cs # #if false 死代码
-│   │
-│   ├── Mcp/
-│   │   ├── JsonRpcClient.cs            # 旧 MCP JSON-RPC 客户端
-│   │   ├── PlaywrightMcpClient.cs      # 旧 Playwright MCP 包装
-│   │   └── Models/McpMessage.cs
-│   │
-│   └── Skills/
-│       ├── SkillModels.cs
-│       ├── SkillRegistry.cs
-│       ├── SkillSystemIntegration.cs   # 旧 MCP 技能系统入口
-│       ├── McpSkillDataProvider.cs
-│       ├── McpSkillExecutor.cs
-│       ├── SkillExecutionContext.cs
-│       └── Strategy/
-│           ├── IStrategyHandler.cs
-│           ├── NavigationStrategy.cs
-│           ├── LocateStrategy.cs
-│           ├── RetryStrategy.cs
-│           ├── ContextStrategy.cs
-│           ├── RecoveryStrategy.cs
-│           └── PrivacyStrategy.cs
-│
-└── Converters/
-    └── MarkdownToFlowDocumentConverter.cs
+└── Services/
+    └── AiClient.cs
+        # 增强连接测试失败日志；确保 ARK 走 OpenAI-compatible Bearer 分支
+```
 
-Tools/
-├── playwright-mcp/playwright-mcp-0.0.75/
-└── platform-tools/
+项目根目录：
+
+```text
+DESIGN.md
+# 本解决方案文档
 ```
 
 ---
 
-## 4. 总体架构
+## 5. 核心接口设计
 
-当前 Demo 可以分为五个主要层次：
+### 5.1 Provider 定义
 
-```text
-┌─────────────────────────────────────────────────────────────┐
-│                         WPF UI                              │
-│ MainWindow | AiSecondaryWindow | AiChatPanel | Downloads UI │
-└───────────────┬─────────────────────────────┬───────────────┘
-                │                             │
-                ▼                             ▼
-┌─────────────────────────────┐   ┌───────────────────────────┐
-│ BrowserViewModel            │   │ ChatViewModel              │
-│ tabs/navigation/status       │   │ chat/tools/pause/resume    │
-└───────────────┬─────────────┘   └──────────────┬────────────┘
-                │                                │
-                ▼                                ▼
-┌─────────────────────────────┐   ┌───────────────────────────┐
-│ BrowserHostService          │   │ AiClient + ContextBuilder  │
-│ WebView2 lifecycle/tabs      │   │ SSE + tool schemas         │
-└───────────────┬─────────────┘   └──────────────┬────────────┘
-                │                                │
-                ▼                                ▼
-┌─────────────────────────────┐   ┌───────────────────────────┐
-│ BrowserAutomationService    │◄──│ BrowserAutomationToolRouter│
-│ WebView2 API + JS injection  │   │ browser_* tool dispatch    │
-└─────────────────────────────┘   └───────────────────────────┘
+在 `ProviderManager.RegisterAll()` 中增加内置服务商：
+
+```csharp
+Register("volcengine-ark", "Volcengine ARK（火山方舟）",
+    "https://ark.cn-beijing.volces.com/api/coding/v3",
+    "Bearer", "火山方舟",
+    new ModelInfo("", "请输入 Endpoint/模型 ID", 0, "openai-compatible")
+);
 ```
 
-### 4.1 关键对象职责
+实际实现时可以不放空 `ModelInfo`，避免空模型被误选；更推荐不提供固定模型列表，让用户在可编辑 `ModelCombo` 中填写自己的 ARK endpoint/model ID。
 
-| 对象 | 职责 |
-|------|------|
-| `MainWindow` | 应用主壳；创建 `BrowserViewModel`；初始化 WebView2 宿主和自动化服务；打开 AI 副窗口和下载窗口 |
-| `BrowserViewModel` | 管理 Tab 集合、地址栏、导航命令、状态文本 |
-| `BrowserHostService` | 创建/关闭/激活 WebView2 标签；绑定 WebView2 事件；处理下载、弹窗、新窗口、崩溃 |
-| `BrowserAutomationService` | 当前 AI 浏览器操作执行器；所有 WebView2 操作切回 UI 线程；串行化自动化操作 |
-| `AutomationScripts` | 生成注入页面的 JS：快照、点击、输入、悬停、选择、滚动等 |
-| `BrowserAutomationToolRouter` | 定义 AI 可见的 `browser_*` 工具 schema，并把调用参数转给 `BrowserAutomationService` |
-| `ChatViewModel` | 聊天 UI 状态、消息列表、工具注册、工具调度、`ask_user` 暂停恢复、todo UI |
-| `AiClient` | AI API 请求、SSE 流解析、OpenAI/Anthropic 工具调用循环、上下文压缩 |
-| `ContextBuilder` | 构建系统提示词、动态页面上下文、工具 schema |
-| `ConversationService` | 对话 JSON 文件保存/加载/删除 |
-| `ProviderManager` | AI 服务商和模型列表 |
+### 5.2 Provider 选择规则
 
----
+`AiClient` 当前规则：
 
-## 5. 启动与浏览器初始化流程
-
-### 5.1 启动流程
-
-```text
-App 启动
-  ↓
-MainWindow 构造
-  ├─ InitializeComponent()
-  ├─ new BrowserViewModel()
-  ├─ 绑定 BrowserViewModel 事件：导航/后退/前进/刷新/下载/标签关闭/标签激活
-  ├─ 绑定 ChatViewModel 事件：打开设置、AI 面板显示状态
-  ├─ 注册 Loaded
-  └─ 注册 Closing 清理资源
-  ↓
-MainWindow.OnLoaded
-  ├─ new BrowserHostService(Dispatcher, ContentArea)
-  ├─ 设置 UserDataFolder = %LocalAppData%/SmartAI-Browser-Demo/webview2-profile
-  ├─ await BrowserHostService.InitializeAsync()
-  ├─ new BrowserAutomationService(); Initialize(Dispatcher)
-  ├─ _browserHost.Automation = _automation
-  ├─ WireBrowserHostEvents()
-  ├─ 为 BrowserViewModel 里已有 Tab 创建 WebView2
-  ├─ 激活当前 Tab
-  ├─ _vm.Chat.AttachAutomationRouter(new BrowserAutomationToolRouter(_automation))
-  └─ 状态显示：浏览器已嵌入，AI 浏览器工具已启用
+```csharp
+private bool IsAnthropicProvider() => Settings.ProviderKey == "anthropic";
 ```
 
-### 5.2 当前不走外部 Chrome/CDP
+因此新增的 `volcengine-ark` 会自然走 OpenAI-compatible 路径，无需额外 request builder。
 
-`MainWindow.OnLoaded` 里有明确注释：
-
-> Phase 4b：不再调用 `_vm.Chat.SetChromeCdpEndpoint`，AI browser_* 工具直接走 WebView2 Automation。
-
-因此当前运行时：
-
-- 不启动 `ChromeProcessManager`；
-- 不打开独立 Chrome 进程；
-- 不通过 Playwright MCP 控制浏览器；
-- 不依赖 CDP 9222 端口；
-- WebView2 是可见浏览器本体，也是自动化目标。
-
----
-
-## 6. WebView2 浏览器宿主设计
-
-### 6.1 `BrowserHostService`
-
-`BrowserHostService` 是当前浏览器宿主。它接收：
-
-- WPF `Dispatcher`；
-- 作为 WebView2 容器的 `Panel`（`MainWindow.ContentArea`）。
-
-核心字段：
-
-- `_webViews: Dictionary<Guid, WebView2>`：Tab ID 到 WebView2 控件的映射；
-- `_environment: CoreWebView2Environment?`：共享浏览器环境；
-- `_activeTabId: Guid?`：当前激活标签；
-- `UserDataFolder`：Cookie、缓存、LocalStorage 等浏览器数据目录。
-
-### 6.2 初始化
-
-`InitializeAsync()` 创建共享 `CoreWebView2Environment`：
-
-- 如果设置了 `UserDataFolder`，用该目录作为 WebView2 profile；
-- 设置 `AdditionalBrowserArguments = "--disable-features=msSmartScreenProtection"`；
-- 重复调用幂等。
-
-### 6.3 标签生命周期
+推荐约定：
 
 ```text
-CreateTabForAsync(TabInfo tab, string url)
-  ├─ 创建 WebView2 控件
-  ├─ 加入 WPF 容器，默认 Collapsed
-  ├─ EnsureCoreWebView2Async(_environment)
-  ├─ ConfigureCoreWebView2(core)
-  ├─ BindCoreEvents(tab, webView)
-  ├─ _webViews[tab.Id] = webView
-  ├─ tab.CoreId = BrowserProcessId
-  └─ 如果 url != about:blank，则 Navigate(url)
+provider_key = volcengine-ark
+endpoint     = https://ark.cn-beijing.volces.com/api/coding/v3
+model        = 用户在火山方舟控制台获得的模型/endpoint ID
+auth         = Bearer <API Key>
 ```
 
-激活标签只切换 `Visibility`：
+### 5.3 Endpoint 校验接口
+
+在 `AiSettingsDialog.xaml.cs` 中增加或扩展校验函数：
+
+```csharp
+private static bool ValidateSettings(AiSettings settings, out string error)
+```
+
+规则：
+
+1. `Model` 必填。
+2. `custom` 和 `volcengine-ark` 必须有 absolute URI endpoint。
+3. scheme 必须是 `http` 或 `https`。
+4. `volcengine-ark` 建议 endpoint 使用官方 Coding Plan OpenAI Base URL：`/api/coding/v3`。
+5. 如果用户填入通用方舟 `/api/v3` 地址，提示该地址不会消耗 Coding Plan 额度，可能产生额外费用。
+
+提示文案：
 
 ```text
-ActivateTab(tabId)
-  ├─ 目标 WebView2 = Visible
-  ├─ 其他 WebView2 = Collapsed
-  └─ _activeTabId = tabId
+火山方舟 Coding Plan 的 OpenAI Base URL 应填写：
+https://ark.cn-beijing.volces.com/api/coding/v3
+请勿填写 /api/v3（通用方舟，会产生额外费用）。
 ```
 
-关闭标签：
+### 5.4 失败诊断接口
 
-```text
-CloseTabAsync(tabId)
-  ├─ 从字典移除
-  ├─ 从 WPF 容器移除
-  ├─ Dispose WebView2
-  └─ 触发 TabClosed
+增强 `AiClient.TestConnectionAsync()`：
+
+```csharp
+using var response = await _http.SendAsync(...);
+var error = ok ? "" : await response.Content.ReadAsStringAsync(ct);
+Logger.Info($"连接测试: HTTP {(int)response.StatusCode} → {(ok ? "成功" : "失败")}");
+if (!ok)
+    Logger.Warning($"连接测试响应: {TruncateError(error)}");
 ```
 
-### 6.4 WebView2 设置
+约束：
 
-`ConfigureCoreWebView2` 当前设置：
+- 不记录 API Key。
+- 响应体只截断记录，避免日志过大。
+- UI 仍可保持简单的“连接失败，请检查 API Key、模型名和端点”。
 
-- `IsScriptEnabled = true`；
-- `AreDefaultScriptDialogsEnabled = false`；
-- `IsWebMessageEnabled = true`；
-- `IsZoomControlEnabled = true`；
-- `IsStatusBarEnabled = false`；
-- `AreDevToolsEnabled = true`；
-- `IsBuiltInErrorPageEnabled = true`；
-- `IsPasswordAutosaveEnabled = false`；
-- `IsGeneralAutofillEnabled = false`。
+### 5.5 配置文件格式
 
-### 6.5 事件桥接
-
-`BrowserHostService` 把 WebView2 事件转成自己的事件，`MainWindow.WireBrowserHostEvents()` 再同步给 UI 和自动化服务。
-
-关键事件：
-
-- 导航开始：显示加载条，更新状态，通知自动化服务加载中；
-- 导航完成：隐藏加载条，更新地址栏、当前页面 URL，通知自动化服务导航结果；
-- 标题变化：同步 `ChatViewModel.CurrentPageTitle`；
-- URL 变化：同步 `ChatViewModel.CurrentPageUrl`；
-- 新窗口请求：转换为应用内新 Tab；
-- WebView 崩溃：关闭异常标签；
-- 下载开始：创建并更新 `DownloadItem`。
-
----
-
-## 7. 浏览器自动化设计
-
-### 7.1 `BrowserAutomationService`
-
-`BrowserAutomationService` 是当前 AI 工具真正执行浏览器操作的地方。
-
-设计目标：
-
-- 后台 AI 工具循环可以安全调用；
-- WebView2 调用必须在 UI 线程执行；
-- 自动化操作必须串行，避免同时点击/输入/导航导致状态错乱；
-- 每次操作返回结构化 `AutomationResult`。
-
-线程模型：
-
-```text
-AI 工具循环线程
-  ↓ 调用 BrowserAutomationService.*Async
-SemaphoreSlim(1,1) 串行化
-  ↓ Dispatcher.InvokeAsync
-WPF UI 线程执行 WebView2 / JS
-  ↓
-返回 AutomationResult
-```
-
-关键状态：
-
-- `_dispatcher`：WPF UI Dispatcher；
-- `_webViews`：已绑定 WebView2；
-- `_activeTabId`：当前自动化目标；
-- `_operationLock`：全局串行操作锁；
-- `CurrentUrl`：当前 URL；
-- `DefaultOperationTimeoutMs = 30000`。
-
-### 7.2 当前自动化能力
-
-| 能力 | 方法 / 工具 |
-|------|-------------|
-| 导航 | `NavigateAsync` / `browser_navigate` |
-| 后退/前进/刷新 | `GoBackAsync` / `GoForwardAsync` / `ReloadAsync` |
-| 页面快照 | `GetSnapshotAsync` / `browser_snapshot` |
-| 点击 | `ClickAsync(elementId)` / `browser_click` |
-| 输入 | `TypeAsync(elementId, text, clearFirst)` / `browser_type` |
-| 悬停 | `HoverAsync(elementId)` / `browser_hover` |
-| 下拉选择 | `SelectOptionAsync(elementId, value)` / `browser_select_option` |
-| 滚动 | `ScrollAsync(deltaX, deltaY)` / `browser_scroll` |
-| 特殊按键 | `PressKeyAsync(key)` / `browser_press_key` |
-| 截图 | `TakeScreenshotAsync` / `browser_screenshot` |
-| JS 执行 | `EvaluateJavaScriptAsync` / `browser_js` |
-| 固定等待 | `WaitAsync(ms)` / `browser_wait` |
-| 等待文本 | `WaitForTextAsync(text, timeout)` / `browser_wait_for` |
-| 表单批量填充 | `FillFormAsync(fields)` / `browser_fill_form` |
-| 切换自动化目标标签 | `SwitchToTab(Guid)` / `browser_switch_tab` |
-
-### 7.3 元素定位约定
-
-当前 WebView2 工具优先使用页面快照返回的整数 `element_id`。
-
-典型流程：
-
-```text
-AI 调用 observe_browser 或 browser_snapshot
-  ↓
-返回页面交互元素列表，每个元素有 id
-  ↓
-AI 调用 browser_click / browser_type / browser_hover / browser_select_option
-  ↓
-参数使用 element_id = 快照中的整数 id
-```
-
-注意：
-
-- `element_id` 可能因为页面刷新或 DOM 更新而失效；
-- 工具连续失败时，`ChatViewModel.ExecuteAiToolAsync` 会提示重新获取快照；
-- 第 3 次以上带旧 `element_id` 的失败路径会直接刷新快照并要求模型选新 id。
-
-### 7.4 `AutomationScripts`
-
-`AutomationScripts` 负责生成注入页面的 JavaScript。它承担：
-
-- 给可交互元素生成稳定的 `data-bermain-id` / id 映射；
-- 收集元素文本、role、type、name、aria-label、placeholder、value、visible、disabled、readonly 等信息；
-- 点击元素；
-- 输入文本，绕过前端框架对 value setter 的拦截，并分发 `input` / `change` 事件；
-- 悬停、滚动、选择 option；
-- 等待文本出现。
-
----
-
-## 8. AI 工具注册与执行
-
-### 8.1 工具注册入口
-
-当前工具注册发生在：
-
-```text
-MainWindow.OnLoaded
-  → ChatViewModel.AttachAutomationRouter(router)
-```
-
-`AttachAutomationRouter` 做五件事：
-
-1. 保存 `_automationRouter`；
-2. 注册 `router.GetToolDefinitions()` 返回的全部 `browser_*` 工具；
-3. 注册 `observe_browser`；
-4. 注册 `ask_user`；
-5. 注册任务规划和上下文管理工具：`set_task_iterations`、`update_todo`、`start_subtask`、`finish_subtask`。
-
-这些工具都进入 `ContextBuilder.RegisteredTools`，随后由 `AiClient` 转换成 OpenAI 或 Anthropic 的工具 schema。
-
-### 8.2 当前 AI 可见工具
-
-#### 浏览器工具
-
-| 工具 | 说明 |
-|------|------|
-| `browser_navigate` | 打开指定 URL 并等待导航完成 |
-| `browser_back` | 后退 |
-| `browser_forward` | 前进 |
-| `browser_reload` | 刷新 |
-| `browser_snapshot` | 获取当前页面结构化快照，返回可交互元素 id |
-| `browser_click` | 点击 `element_id` 对应元素 |
-| `browser_type` | 在 `element_id` 对应输入元素中输入文本 |
-| `browser_hover` | 悬停到元素 |
-| `browser_select_option` | 选择下拉框 option value |
-| `browser_scroll` | 按像素滚动页面 |
-| `browser_press_key` | 发送 Enter、Tab、Escape、方向键等特殊按键 |
-| `browser_screenshot` | 截图；结果只返回摘要，不把完整 base64 注入上下文 |
-| `browser_js` | 执行自定义 JavaScript |
-| `browser_wait` | 固定等待毫秒数 |
-| `browser_wait_for` | 等待页面出现指定文本 |
-| `browser_fill_form` | 批量填充表单字段 |
-| `browser_switch_tab` | 切换自动化目标 Tab |
-
-#### 包装与协作工具
-
-| 工具 | 说明 |
-|------|------|
-| `observe_browser` | 调用 `browser_snapshot` 并格式化为 PageAgent 风格 `<browser_state>`，适合模型阅读 |
-| `ask_user` | AI 遇到岔路口时暂停并向用户提问 |
-| `set_task_iterations` | 设置本阶段工具循环软提醒阈值，范围 1–80 |
-| `update_todo` | 在 AI 面板显示完整任务列表和状态 |
-| `start_subtask` | 开始子任务，触发上下文压缩并标记 in_progress |
-| `finish_subtask` | 结束子任务，标记 completed 或 blocked |
-
-### 8.3 工具执行路由
-
-`ChatViewModel.ExecuteAiToolAsync` 按顺序处理：
-
-1. `observe_browser`；
-2. `ask_user`；
-3. `set_task_iterations`；
-4. `update_todo`；
-5. `start_subtask` / `finish_subtask`；
-6. 当前 WebView2 自动化工具（`_automationRouter.IsToolRegistered(toolName)`）；
-7. 旧 MCP 直接工具（仅 `SkillSystem.IsInitialized` 时）；
-8. 旧组合技能（仅 `SkillSystem.IsInitialized` 时）；
-9. 未注册工具错误。
-
-当前正常运行路径命中第 1–6 类。
-
----
-
-## 9. AI 客户端设计
-
-### 9.1 Provider 与设置
-
-`ProviderManager` 注册多个服务商及其默认 endpoint / auth type / 模型列表：
-
-- OpenAI
-- Anthropic
-- Google Gemini（OpenAI-compatible endpoint）
-- DeepSeek
-- xAI
-- Groq
-- Cerebras
-- Mistral
-- Together AI
-- Fireworks
-- OpenRouter
-- Alibaba / Qwen
-- Zhipu
-- Moonshot
-- SiliconFlow
-- Ollama
-- DeepInfra
-
-`AiSettings` 包含：
-
-- `Id`
-- `DisplayName`
-- `ProviderKey`
-- `ApiKey`
-- `Model`
-- `Endpoint`
-- `ResolvedEndpoint`
-- `DefaultModel`
-
-`AiSettingsStore` 支持多 profile：
-
-- `Profiles`
-- `ActiveId`
-- `DefaultId`
-
-设置文件位置：
-
-```text
-<AppDomain.CurrentDomain.BaseDirectory>/ai_settings.json
-```
-
-### 9.2 OpenAI-compatible 请求
-
-OpenAI-compatible 路径使用：
-
-- Bearer token；
-- `model`；
-- `stream = true`；
-- `messages`；
-- `tools`；
-- `tool_choice` 等按实现构造。
-
-系统提示词由 `ContextBuilder.BuildSystemPrompt()` 注入为 `role=system` 消息。
-
-流式解析主要处理：
-
-- `delta.content`；
-- `delta.tool_calls`；
-- `finish_reason`。
-
-### 9.3 Anthropic native 请求
-
-Anthropic 路径使用：
-
-- `x-api-key`；
-- `anthropic-version: 2023-06-01`；
-- endpoint `/v1/messages`；
-- 顶层 `system` 字段；
-- `messages`；
-- `tools`。
-
-流式解析主要处理：
-
-- `content_block_start`；
-- `content_block_delta`；
-- `input_json_delta`；
-- `content_block_stop`；
-- `message_delta`。
-
-### 9.4 工具循环
-
-`AiClient.ExecuteConversationAsync` 是核心工具循环。
-
-简化流程：
-
-```text
-for iteration = 0; ; iteration++
-  ├─ 如上下文过大，CompressHistory
-  ├─ StreamRichEventsAsync(messages)
-  │   ├─ content → 立即 yield 给 UI
-  │   ├─ tool_call_start / tool_call_delta → 累积 ToolCallData
-  │   └─ finish → 记录 finish_reason
-  ├─ 如果没有 tool call → yield break
-  ├─ 添加 assistant(tool_calls) 消息
-  ├─ 对每个 tool call:
-  │   ├─ ParseArguments()
-  │   ├─ executeTool(toolName,args)
-  │   ├─ ask_user sentinel → yield sentinel + yield break
-  │   ├─ start_subtask sentinel → CompressHistory 后去掉 sentinel
-  │   └─ 添加 tool result 消息
-  ├─ 应用 set_task_iterations 的软提醒阈值
-  ├─ stale result >= 3 → 强制终止
-  ├─ 接近软阈值 → 注入系统效率提醒
-  └─ 下一轮
-```
-
-停止条件：
-
-- 模型返回纯文本；
-- `ask_user` 暂停；
-- 用户取消；
-- AI API 报错；
-- 连续 3 轮 legacy `skill_extract` / `skill_query` 返回短或无效结果。
-
-重要：这里没有硬性的最大工具轮数；`maxIterations` 是提醒阈值，不是强制上限。
-
-### 9.5 上下文压缩
-
-压缩触发：
-
-- 估算对话大小超过 `150_000` bytes；
-- 或距离上次压缩 20 轮以上且消息数超过 40；
-- 或 `start_subtask` 返回压缩 sentinel。
-
-压缩目标：
-
-- 尽量压到 `100_000` bytes 以下；
-- 保留最近约 20 条消息；
-- 尽量从安全边界压缩，避免破坏 assistant/tool 配对；
-- 旧消息替换为摘要。
-
----
-
-## 10. `ask_user` 人机协作暂停机制
-
-`ask_user` 是当前 Demo 中最重要的人机协作能力。它允许 AI 在任务中途暂停，询问用户，再继续原工具循环。
-
-### 10.1 schema 概念
-
-AI 可传：
-
-- `question`：要问用户的问题；
-- `question_type`：`confirmation` / `multiple_choice` / `open_ended`；
-- `options`：多选项；
-- `context_summary`：当前背景；
-- `default_option`：推荐选项。
-
-### 10.2 暂停流程
-
-```text
-AI tool_call: ask_user(...)
-  ↓
-ChatViewModel.ExecuteAiToolAsync
-  ├─ 生成 UserQuestionInfo
-  └─ 返回 __ASK_USER_PAUSED__:{json}
-  ↓
-AiClient.ExecuteConversationAsync
-  ├─ yield sentinel
-  └─ yield break
-  ↓
-ChatViewModel.SendAsync / ContinueToolLoopAsync
-  ├─ 解析 UserQuestionInfo
-  ├─ IsAwaitingUserInput = true
-  ├─ PendingAskUserQuestion = question
-  ├─ 保存 _pendingMessages / _pendingAiMsg / _pendingToolCallId
-  └─ UI 显示问题卡片
-```
-
-### 10.3 恢复流程
-
-```text
-用户点击选项或跳过
-  ↓
-RespondToQuestionAsync(userResponse)
-  ├─ 防重入 _isResponding
-  ├─ __skip__ 转成“用户选择跳过...”
-  ├─ 追加 MessageRole.Tool / ToolName=ask_user
-  └─ ContinueToolLoopAsync(_pendingMessages, _pendingAiMsg)
-      └─ 继续 ExecuteConversationAsync
-```
-
-该机制保留原来的消息列表，因此模型能看到自己之前的工具调用、用户回答和后续工具结果。
-
----
-
-## 11. 任务拆分与 Todo UI
-
-当前 `ContextBuilder` 的系统提示词要求模型：
-
-1. 接到任务后先拆成子任务；
-2. 用 `update_todo` 一次性写入完整任务清单；
-3. 每个子任务开始前调用 `start_subtask`；
-4. 成功后调用 `finish_subtask(status="completed")`；
-5. 阻塞时调用 `finish_subtask(status="blocked")` 并说明用户需要处理什么。
-
-`ChatViewModel.TodoItems` 是一个 `ObservableCollection<AiTodoItem>`，由 `update_todo`、`start_subtask`、`finish_subtask` 更新，用于 AI 面板显示实时进度。
-
-`start_subtask` 还会返回特殊前缀：
-
-```text
-__SUBTASK_CONTEXT_COMPRESSED__:
-```
-
-`AiClient` 收到后会先压缩上下文，再把普通工具结果写回消息历史。
-
----
-
-## 12. 数据存储设计
-
-### 12.1 AI 设置
-
-当前设置不是 SQLite，而是 JSON 文件：
-
-```text
-<AppDomain.CurrentDomain.BaseDirectory>/ai_settings.json
-```
-
-支持两种格式：
-
-1. 新格式：`AiSettingsStore`，包含多 profile；
-2. 旧格式：单个 `AiSettings`，加载时自动迁移为多 profile。
-
-### 12.2 对话存储
-
-对话存储目录：
-
-```text
-%LocalAppData%/SmartAI-Browser-Demo/conversations/
-```
-
-每个会话一个 JSON 文件：
+无需新增字段。正确 ARK profile 示例（省略真实 API Key）：
 
 ```json
 {
-  "id": "conversation-id",
-  "savedAt": "...",
-  "messages": [ ... ]
+  "display_name": "ARK",
+  "provider_key": "volcengine-ark",
+  "api_key": "<redacted>",
+  "model": "<your-ark-model-or-endpoint-id>",
+  "endpoint": "https://ark.cn-beijing.volces.com/api/coding/v3"
 }
 ```
 
-`ConversationService` 支持：
+---
 
-- `ListConversations()`：扫描目录生成摘要；
-- `SaveConversation(id, messages)`；
-- `LoadConversation(id)`；
-- `DeleteConversation(id)`。
+## 6. 数据流设计
 
-### 12.3 WebView2 Profile
-
-WebView2 用户数据目录：
+### 6.1 成功配置流程
 
 ```text
-%LocalAppData%/SmartAI-Browser-Demo/webview2-profile/
+用户点击模型设置
+  ↓
+AiModelSelectionDialog.LoadRows()
+  ↓
+用户添加/编辑 ARK profile
+  ↓
+AiSettingsDialog.ProviderCombo 选择 Volcengine ARK
+  ↓
+EndpointBox 自动显示默认 endpoint 或提示用户填写
+  ↓
+用户填写 API Key + model
+  ↓
+ValidateSettings()
+  ├─ provider 正确：volcengine-ark
+  ├─ endpoint 正确：/api/v3/chat/completions
+  └─ model 非空
+  ↓
+AiModelSelectionDialog.Save_Click()
+  ↓
+ai_settings.json
+  ↓
+ChatViewModel.ApplySettings(store.ResolveActive())
 ```
 
-该目录由 WebView2 管理，保存 cookie、缓存、local storage 等。
-
-### 12.4 下载状态
-
-下载记录当前是内存态：
+### 6.2 连接测试流程
 
 ```text
-DownloadManager.Items : ObservableCollection<DownloadItem>
+用户点击“测试连接”
+  ↓
+AiSettingsDialog.CollectSettings()
+  ↓
+ValidateSettings()
+  ↓
+_aiClient.Settings = settings
+  ↓
+AiClient.TestConnectionAsync()
+  ├─ provider_key != anthropic
+  ├─ ConfigureHeaders(): Authorization: Bearer <API Key>
+  ├─ BuildOpenAITestRequest()
+  ├─ POST https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions
+  └─ 2xx = 成功；非 2xx = 日志记录响应摘要
 ```
 
-WebView2 `DownloadStarting` 创建 `DownloadItem`，下载进度事件更新状态。`DownloadsWindow` 显示该集合。
+### 6.3 错误处理路径
+
+| 错误 | 当前表现 | 修复后表现 |
+|------|----------|------------|
+| `provider_key = anthropic` | 走 Anthropic native 格式，请求协议错误 | UI 中提供 ARK provider；旧 ARK-like 配置可提示切换到 ARK/custom。 |
+| endpoint 为 `/api/coding` | HTTP 404，只显示无法接通 | 保存/测试前提示 endpoint 不完整，建议 `/api/coding/v3`。 |
+| endpoint 为 `/api/coding/v3` | 旧客户端会直接 POST Base URL 导致 404 | 新客户端自动补 `/chat/completions`。 |
+| API Key 错误 | 连接失败 | 日志记录 401/403 响应摘要，UI 提示检查 Key。 |
+| model ID 错误 | 可能 400/404 | 日志记录响应摘要，UI 提示检查模型名。 |
+| 没点外层“保存” | 内层显示已保存但配置文件未更新 | 保持现有状态提示“已更新模型，点击保存后生效”；可考虑增强提示。 |
 
 ---
 
-## 13. 旧 MCP / 外部 Chrome 路径
+## 7. 数据存储设计
 
-代码中仍保留一套 Playwright MCP / 外部 Chrome 方案：
+### 7.1 存储位置
 
-- `Services/BrowserHost/ChromeProcessManager.cs`
-- `Services/Mcp/JsonRpcClient.cs`
-- `Services/Mcp/PlaywrightMcpClient.cs`
-- `Services/Skills/SkillSystemIntegration.cs`
-- `Services/Skills/McpSkillDataProvider.cs`
-- `Services/Skills/McpSkillExecutor.cs`
-- `Tools/playwright-mcp/playwright-mcp-0.0.75/`
+AI 配置文件仍位于运行输出目录：
 
-这套系统定义：
-
-- 13 个 atomic skills；
-- 7 个 composite skills；
-- 6 个 strategy skills。
-
-但是当前启动流没有初始化它：
-
-- `MainWindow.OnLoaded` 不调用 `SetChromeCdpEndpoint`；
-- `SkillSystemIntegration.IsInitialized` 通常为 false；
-- `ContextBuilder.ImportSkillsFromRegistry` 不会在当前路径执行；
-- AI 工具来自 WebView2 Automation Router。
-
-因此：
-
-- 写当前功能时，不要把 MCP 当作运行时主路径；
-- 如果要恢复 MCP，需要重新设计启动流、外部 Chrome 管理、CDP endpoint 生命周期以及与 WebView2 当前路径的关系；
-- `ChromeProcessManager` 的存在不代表当前 App 会启动 Chrome。
-
----
-
-## 14. 死代码与遗留模型
-
-### 14.1 `WebView2AutomationBridge.cs`
-
-该文件顶部为：
-
-```csharp
-#if false
+```text
+<AppDomain.CurrentDomain.BaseDirectory>/ai_settings.json
 ```
 
-整文件不参与编译。不要在新实现中引用或修改它作为当前功能基础。
+开发调试时常见路径：
 
-### 14.2 两套 SkillDefinition
-
-当前代码中存在两套技能定义：
-
-1. `Models/SkillDefinition.cs` 等 record 类型：旧模型，非当前运行路径；
-2. `Services/Skills/SkillModels.cs` 等 class 类型：MCP 技能系统使用。
-
-`ChatViewModel.cs` 用 alias 区分：
-
-```csharp
-using SkillDef = BrowserDemo.Services.Skills.SkillDefinition;
-using SkillExecResult = BrowserDemo.Services.Skills.SkillExecutionResult;
-using SkillStat = BrowserDemo.Services.Skills.SkillStatus;
-using CompositeSkill = BrowserDemo.Services.Skills.CompositeSkillDefinition;
+```text
+Demo/BrowserDemo/bin/Debug/net8.0-windows/ai_settings.json
 ```
 
-但由于 MCP 技能系统当前未初始化，主运行路径依然是 `BrowserAutomationToolRouter`。
+发布包路径可能是：
+
+```text
+Demo/publish/with-dotnet/ai_settings.json
+```
+
+### 7.2 存储结构
+
+继续使用现有 `AiSettingsStore`：
+
+```json
+{
+  "profiles": [
+    {
+      "id": "...",
+      "display_name": "ARK",
+      "provider_key": "volcengine-ark",
+      "api_key": "<redacted>",
+      "model": "<your-model>",
+      "endpoint": "https://ark.cn-beijing.volces.com/api/coding/v3"
+    }
+  ],
+  "active_id": "...",
+  "default_id": "..."
+}
+```
+
+### 7.3 为什么不新增数据结构
+
+- `ProviderKey` 能表达 ARK 服务商。
+- `Endpoint` 能保存 ARK chat completions 地址。
+- `Model` 能保存火山方舟控制台提供的模型/endpoint ID。
+- `ApiKey` 能保存访问密钥。
+
+因此无需新增 `CustomProvider` 表、无需迁移配置文件。
+
+### 7.4 配置迁移建议
+
+可选增强：加载或编辑旧 profile 时，如果发现：
+
+```text
+display_name 包含 ark/ARK
+endpoint 包含 ark.cn-beijing.volces.com
+provider_key = anthropic
+```
+
+则在 UI 层提示用户：
+
+```text
+检测到该配置像火山方舟 ARK，但当前服务商是 Anthropic。建议切换为 Volcengine ARK。
+```
+
+不建议静默迁移，避免误改用户配置。
 
 ---
 
-## 15. 错误处理与可靠性策略
+## 8. 分步实现计划
 
-### 15.1 WebView2 初始化失败
+### 阶段 1：复现与诊断固化
 
-`MainWindow.OnLoaded` 捕获异常：
+**目标**：让日志明确说明 ARK 失败原因。
 
-- 写入日志；
-- 更新状态文本；
-- 弹出 MessageBox。
+需要实现：
 
-当前没有旧文档中的“自动 fallback 到 WebView2”，因为 WebView2 本身就是主路径。
+- 修改 `Demo/BrowserDemo/Services/AiClient.cs`
+  - `TestConnectionAsync()` 在非 2xx 时读取响应体摘要并写入 `Logger.Warning`。
+  - 继续避免记录 API Key。
 
-### 15.2 浏览器工具失败重试
+前置依赖：无。
 
-`ChatViewModel.ExecuteAiToolAsync` 对 WebView2 自动化工具维护 `_toolRetryTracker`：
+验收标准：
 
-- 第 1 次失败：建议重试；
-- 第 2 次失败：建议重新 `browser_snapshot`，换新的 `element_id`；
-- 第 3 次起，如果参数里有 `element_id`，直接刷新快照并要求模型不要继续用旧 id；
-- 第 4 次仍失败：建议 `ask_user` 向用户求助。
+- 使用错误 endpoint 测试时，日志能看到 HTTP 404 和服务端响应摘要。
+- `dotnet build` 成功。
 
-### 15.3 截图控制
+### 阶段 2：增加 Volcengine ARK 内置 provider
 
-`browser_screenshot` 必须提供明确 `reason`。Router 会拒绝不充分的截图原因，避免模型频繁把大截图数据引入上下文。
+**目标**：用户不再需要把 ARK 伪装成 Anthropic 或完全自定义。
 
-当前截图工具成功时只返回摘要，例如 base64 长度，不返回完整 base64。
+需要实现：
 
-### 15.4 UI 卡顿控制
+- 修改 `Demo/BrowserDemo/Models/ProviderInfo.cs`
+  - 新增 `volcengine-ark` provider。
+  - 默认 endpoint：`https://ark.cn-beijing.volces.com/api/coding/v3`。
+  - AuthType：`Bearer`。
+  - Badge：`火山方舟`。
+  - 放入 `GetAll()` 显示顺序，建议位于 DeepSeek 或 custom 附近。
 
-`ChatViewModel.SendAsync` / `ContinueToolLoopAsync` 根据当前内容长度动态调整 UI 更新频率：
+前置依赖：阶段 1 可并行。
 
-- 短内容更新更频繁；
-- 长内容更新更慢，减轻 Markdown 渲染压力。
+验收标准：
 
-`AiClient.ExecuteConversationAsync` 每 3 轮工具循环 `Task.Yield()`，减少 UI 长时间无响应风险。
+- 模型设置面板服务商下拉框出现 `Volcengine ARK（火山方舟）`。
+- 选择后连接测试走 OpenAI-compatible 分支，而不是 Anthropic 分支。
 
-### 15.5 上下文过大控制
+### 阶段 3：增加 ARK endpoint 校验与提示
 
-通过：
+**目标**：在用户点击测试/保存前拦截 `/api/coding` 和通用 `/api/v3` 这类不适合 Coding Plan 的路径，并允许 `/api/coding/v3` Base URL。
 
-- 150 KB 自动压缩；
-- 20 轮 / 40 消息兜底压缩；
-- 子任务开始强制压缩；
-- 压缩摘要和保留近期消息。
+需要实现：
 
----
+- 修改 `Demo/BrowserDemo/Views/AiSettingsDialog.xaml.cs`
+  - 扩展 `ValidateSettings()`。
+  - 对 `provider_key == "volcengine-ark"` 执行 ARK 专项校验。
+  - 对 `custom` 中包含 `ark.cn-beijing.volces.com` 的 endpoint 也给出同类提示。
 
-## 16. 添加新浏览器工具的推荐流程
+- 修改 `Demo/BrowserDemo/Views/AiSettingsDialog.xaml`
+  - endpoint 提示文字加入 ARK 示例。
 
-如果要给当前 Demo 增加新的 AI 浏览器能力，按当前主路径修改：
+前置依赖：阶段 2。
 
-1. **实现底层能力**  
-   在 `BrowserAutomationService` 中添加方法；如果需要页面 DOM 操作，在 `AutomationScripts` 中添加 JS 生成方法。
+验收标准：
 
-2. **注册工具 schema**  
-   在 `BrowserAutomationToolRouter.GetToolDefinitions()` 中添加 `ToolDefinition`。
+- 输入 `https://ark.cn-beijing.volces.com/api/coding` 时，测试/保存被阻止并提示正确地址。
+- 输入 `https://ark.cn-beijing.volces.com/api/coding/v3` 时同样被阻止。
+- 输入 `https://ark.cn-beijing.volces.com/api/coding/v3` 可通过本地校验。
 
-3. **添加 dispatch case**  
-   在 `BrowserAutomationToolRouter.InvokeAsync` 的 switch 中添加新工具名到服务方法的映射。
+### 阶段 4：配置文件修正与人工验证
 
-4. **更新提示词**  
-   如模型需要特殊使用规则，在 `ContextBuilder.AppendBehaviorGuidelines` 或能力说明中补充。
+**目标**：修正当前本机 ARK profile，并确认 DeepSeek 不受影响。
 
-5. **验证运行**  
-   使用：
+需要操作：
 
-   ```bash
-   cd C:/CodeSpace/Objects/Browser/Demo
-   dotnet build BrowserDemo/BrowserDemo.csproj
-   dotnet run --project BrowserDemo/BrowserDemo.csproj
-   ```
+- 通过 UI 编辑名为 ARK/ark 的 profile：
+  - Provider：`Volcengine ARK（火山方舟）`
+  - Endpoint：`https://ark.cn-beijing.volces.com/api/coding/v3`
+  - Model：使用火山方舟控制台给出的模型/endpoint ID
+  - API Key：保持用户自己的 ARK key
+- 在外层 `AiModelSelectionDialog` 点击“保存”，确保写入 `ai_settings.json`。
 
-6. **不要误改旧 MCP 路径**  
-   除非需求明确要恢复/替换为 Playwright MCP，否则不要把新工具只加到 `McpSkillDataProvider`。
+前置依赖：阶段 1-3。
 
----
+验收标准：
 
-## 17. 当前功能边界
+- ARK profile 保存后 `provider_key` 不再是 `anthropic`。
+- ARK endpoint 不再是 `/api/coding` 或 `/api/coding/v3`。
+- DeepSeek profile 仍能正常连接。
+- ARK 使用正确 key/model/endpoint 时连接测试返回 2xx。
 
-已实现或基本可用：
+### 阶段 5：最终构建验证
 
-- WPF 主窗口；
-- WebView2 多标签；
-- 地址栏导航；
-- 后退/前进/刷新；
-- AI 独立副窗口；
-- AI Provider 配置；
-- OpenAI-compatible / Anthropic-native SSE；
-- Function Calling / Tool Use；
-- WebView2 自动化浏览器工具；
-- 页面观察与元素 id 交互；
-- ask_user 暂停恢复；
-- AI todo list；
-- 对话 JSON 持久化；
-- WebView2 下载进度窗口。
+**目标**：确认代码可编译。
 
-部分实现 / 遗留 / 非主路径：
-
-- Playwright MCP 技能系统；
-- 外部 Chrome CDP 嵌入；
-- ADB SMS 服务；
-- 旧 WebView2AutomationBridge。
-
-未实现为完整产品能力：
-
-- SQLite 历史/书签数据库；
-- 完整书签管理；
-- 完整历史记录 UI；
-- 隐私模式；
-- 密码管理；
-- 插件市场；
-- 安装器/自动更新；
-- 单元测试项目。
-
----
-
-## 18. 构建与验证标准
-
-当前最小验证：
+执行：
 
 ```bash
-cd C:/CodeSpace/Objects/Browser/Demo
-dotnet build BrowserDemo/BrowserDemo.csproj
+dotnet build C:/CodeSpace/Objects/Browser/Demo/BrowserDemo/BrowserDemo.csproj
 ```
 
-人工验证建议：
+验收标准：
 
-1. 启动应用；
-2. WebView2 内容区成功加载；
-3. 地址栏输入 URL 可导航；
-4. 打开 AI 面板；
-5. 配置模型 API Key；
-6. 让 AI 执行简单浏览器任务，例如：
-   - “打开 https://www.bing.com”；
-   - “观察当前页面”；
-   - “搜索 hello world”；
-7. 检查 AI 是否先调用 `observe_browser` / `browser_snapshot`，再用整数 `element_id` 操作页面；
-8. 检查对话是否保存到 `%LocalAppData%/SmartAI-Browser-Demo/conversations/`。
+- 0 errors。
+- 尽量保持 0 warnings。
 
 ---
 
-## 19. 维护原则
+## 附：当前应避免的错误配置
 
-- 当前主线是 **WebView2 内嵌 + BrowserAutomationService**。
-- 不要把旧文档中的“外部 Chrome + Playwright MCP”描述为当前运行事实。
-- 不要把 `WebView2AutomationBridge.cs` 作为可用代码。
-- 保持工具结果紧凑，避免污染 LLM 上下文。
-- 对 WebView2 的所有访问必须尊重 UI 线程要求。
-- 自动化操作默认串行，除非重新设计并发模型。
-- 任何模型/工具 schema 修改都要同时考虑 OpenAI-compatible 和 Anthropic-native 两种 API 格式。
-- 修改 AI 工具循环时，要保持 assistant/tool 消息配对合法，避免破坏后续请求格式。
+不要把 ARK 配成：
+
+```json
+{
+  "provider_key": "anthropic",
+  "endpoint": "https://ark.cn-beijing.volces.com/api/coding"
+}
+```
+
+也不要使用：
+
+```text
+https://ark.cn-beijing.volces.com/api/coding/v3
+```
+
+推荐配置形态：
+
+```json
+{
+  "provider_key": "volcengine-ark",
+  "model": "<your-ark-model-or-endpoint-id>",
+  "endpoint": "https://ark.cn-beijing.volces.com/api/coding/v3"
+}
+```

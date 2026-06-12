@@ -49,6 +49,7 @@ public class AiSettingsStore
             {
                 var store = JsonSerializer.Deserialize<AiSettingsStore>(json, AiClient.JsonOptions) ?? new AiSettingsStore();
                 store.EnsureProfileIds();
+                store.NormalizeProviderProtocols();
                 return store;
             }
 
@@ -57,6 +58,7 @@ public class AiSettingsStore
                 legacy.Id = Guid.NewGuid().ToString("N");
             if (string.IsNullOrWhiteSpace(legacy.DisplayName))
                 legacy.DisplayName = "默认模型";
+            NormalizeProviderProtocol(legacy);
 
             var migrated = new AiSettingsStore
             {
@@ -78,12 +80,59 @@ public class AiSettingsStore
     public void Save()
     {
         EnsureProfileIds();
+        NormalizeProviderProtocols();
         var json = JsonSerializer.Serialize(this, AiClient.JsonOptions);
         File.WriteAllText(AiSettings.ConfigPath, json);
     }
 
     private AiSettings? Find(string? id)
         => string.IsNullOrWhiteSpace(id) ? null : Profiles.FirstOrDefault(x => x.Id == id);
+
+    private void NormalizeProviderProtocols()
+    {
+        foreach (var profile in Profiles)
+            NormalizeProviderProtocol(profile);
+    }
+
+    private static void NormalizeProviderProtocol(AiSettings settings)
+    {
+        NormalizeArkCodingEndpoint(settings);
+
+        if (settings.ProviderKey != "anthropic" || !LooksLikeOpenAICompatibleEndpoint(settings.ResolvedEndpoint))
+            return;
+
+        Logger.Warning($"AI 配置协议自动修正: provider=anthropic, endpoint={settings.ResolvedEndpoint} → OpenAI 兼容协议");
+        settings.ProviderKey = settings.ResolvedEndpoint.Contains("ark.cn-beijing.volces.com", StringComparison.OrdinalIgnoreCase)
+            ? "volcengine-ark"
+            : "custom";
+    }
+
+    private static void NormalizeArkCodingEndpoint(AiSettings settings)
+    {
+        var endpoint = settings.Endpoint?.Trim();
+        if (string.IsNullOrWhiteSpace(endpoint)
+            || !endpoint.Contains("ark.cn-beijing.volces.com", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        var normalized = endpoint.TrimEnd('/');
+        string? fixedEndpoint = null;
+        if (normalized.EndsWith("/api/coding", StringComparison.OrdinalIgnoreCase))
+            fixedEndpoint = normalized + "/v3";
+        else if (normalized.EndsWith("/api/coding/chat/completions", StringComparison.OrdinalIgnoreCase))
+            fixedEndpoint = normalized.Replace("/api/coding/chat/completions", "/api/coding/v3/chat/completions", StringComparison.OrdinalIgnoreCase);
+
+        if (fixedEndpoint == null || string.Equals(endpoint, fixedEndpoint, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        Logger.Warning($"火山方舟 Coding Plan endpoint 自动修正: {endpoint} → {fixedEndpoint}");
+        settings.Endpoint = fixedEndpoint;
+    }
+
+    private static bool LooksLikeOpenAICompatibleEndpoint(string endpoint)
+        => endpoint.Contains("/chat/completions", StringComparison.OrdinalIgnoreCase)
+            || endpoint.Contains("/compatible-mode/", StringComparison.OrdinalIgnoreCase)
+            || endpoint.Contains("/openai/", StringComparison.OrdinalIgnoreCase)
+            || endpoint.Contains("ark.cn-beijing.volces.com", StringComparison.OrdinalIgnoreCase);
 
     private void EnsureProfileIds()
     {

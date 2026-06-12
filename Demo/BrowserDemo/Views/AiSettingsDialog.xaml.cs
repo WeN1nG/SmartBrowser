@@ -31,14 +31,27 @@ public partial class AiSettingsDialog : Window
         var s = _aiClient.Settings;
         Logger.Debug($"加载当前设置: provider={s.ProviderKey}, model={s.Model}");
 
-        // 选中当前服务商
+        // 选中当前服务商；旧配置若把 ARK 误存成 anthropic，则优先按 ARK 打开，避免继续使用错误协议。
         var providers = ProviderManager.GetAll();
+        var providerKeyToSelect = LooksLikeArkSettings(s) ? "volcengine-ark" : s.ProviderKey;
         for (int i = 0; i < providers.Count; i++)
         {
-            if (providers[i].Key == s.ProviderKey)
+            if (providers[i].Key == providerKeyToSelect)
             {
                 ProviderCombo.SelectedIndex = i;
                 break;
+            }
+        }
+
+        if (ProviderCombo.SelectedIndex < 0 && !string.IsNullOrWhiteSpace(s.Endpoint))
+        {
+            for (int i = 0; i < providers.Count; i++)
+            {
+                if (providers[i].Key == "custom")
+                {
+                    ProviderCombo.SelectedIndex = i;
+                    break;
+                }
             }
         }
 
@@ -48,6 +61,12 @@ public partial class AiSettingsDialog : Window
         DisplayNameBox.Text = s.DisplayName;
         ApiKeyBox.Password = s.ApiKey;
         EndpointBox.Text = s.Endpoint;
+        if (ProviderCombo.SelectedItem is ProviderInfo { Key: "volcengine-ark" } arkProvider
+            && (string.IsNullOrWhiteSpace(EndpointBox.Text)
+                || (IsArkEndpoint(EndpointBox.Text) && !IsArkCodingPlanEndpoint(EndpointBox.Text))))
+        {
+            EndpointBox.Text = arkProvider.DefaultEndpoint;
+        }
 
         UpdateModelList(s.Model);
     }
@@ -76,7 +95,7 @@ public partial class AiSettingsDialog : Window
         if (string.IsNullOrWhiteSpace(currentSettings.Endpoint)
             || currentSettings.Endpoint == provider.DefaultEndpoint)
         {
-            EndpointBox.Text = "";
+            EndpointBox.Text = provider.Key == "volcengine-ark" ? provider.DefaultEndpoint : "";
         }
 
         _isUpdating = false;
@@ -138,9 +157,67 @@ public partial class AiSettingsDialog : Window
         };
     }
 
+    private static bool ValidateSettings(AiSettings settings, out string error)
+    {
+        if (string.IsNullOrWhiteSpace(settings.Model))
+        {
+            error = "请填写模型 ID。";
+            return false;
+        }
+
+        if (settings.ProviderKey is "custom" or "volcengine-ark")
+        {
+            if (string.IsNullOrWhiteSpace(settings.Endpoint))
+            {
+                error = settings.ProviderKey == "volcengine-ark"
+                    ? "火山方舟 Coding Plan 需要填写 OpenAI Base URL：https://ark.cn-beijing.volces.com/api/coding/v3"
+                    : "自定义服务商需要填写 API 端点。";
+                return false;
+            }
+
+            if (!Uri.TryCreate(settings.Endpoint, UriKind.Absolute, out var uri)
+                || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+            {
+                error = "API 端点必须是 http:// 或 https:// 开头的完整地址。";
+                return false;
+            }
+        }
+
+        if (IsArkEndpoint(settings.Endpoint) && !IsArkCodingPlanEndpoint(settings.Endpoint))
+        {
+            error = "火山方舟 Coding Plan 的 OpenAI Base URL 应填写：https://ark.cn-beijing.volces.com/api/coding/v3。请勿填写 /api/v3（通用方舟，会产生额外费用）。";
+            return false;
+        }
+
+        error = "";
+        return true;
+    }
+
+    private static bool LooksLikeArkSettings(AiSettings settings)
+        => settings.ProviderKey == "anthropic" && IsArkEndpoint(settings.Endpoint);
+
+    private static bool IsArkEndpoint(string endpoint)
+        => endpoint.Contains("ark.cn-beijing.volces.com", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsArkCodingPlanEndpoint(string endpoint)
+    {
+        var normalized = endpoint.TrimEnd('/');
+        return normalized.EndsWith("/api/coding/v3", StringComparison.OrdinalIgnoreCase)
+            || normalized.EndsWith("/api/coding/v3/chat/completions", StringComparison.OrdinalIgnoreCase);
+    }
+
     private async void TestConnection_Click(object sender, RoutedEventArgs e)
     {
         Logger.Info("测试连接按钮点击");
+
+        var settings = CollectSettings();
+        if (!ValidateSettings(settings, out var error))
+        {
+            TestResultText.Text = $"❌ {error}";
+            TestResultText.Foreground = System.Windows.Media.Brushes.OrangeRed;
+            TestResultText.Visibility = Visibility.Visible;
+            return;
+        }
 
         TestBtn.IsEnabled = false;
         TestResultText.Text = "⏳ 测试连接中…";
@@ -149,7 +226,7 @@ public partial class AiSettingsDialog : Window
 
         try
         {
-            _aiClient.Settings = CollectSettings();
+            _aiClient.Settings = settings;
             var ok = await _aiClient.TestConnectionAsync();
 
             if (ok)
@@ -181,6 +258,12 @@ public partial class AiSettingsDialog : Window
     {
         var settings = CollectSettings();
         Logger.Info($"保存 AI 设置: provider={settings.ProviderKey}, model={settings.Model}, endpoint={settings.Endpoint}");
+
+        if (!ValidateSettings(settings, out var error))
+        {
+            MessageBox.Show(error, "AI 设置", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
 
         _aiClient.Settings = settings;
         _saved = true;

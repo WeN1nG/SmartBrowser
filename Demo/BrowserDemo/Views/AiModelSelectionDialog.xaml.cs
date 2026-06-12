@@ -26,6 +26,7 @@ public partial class AiModelSelectionDialog : Window
 
     private void LoadRows()
     {
+        using var _ = Logger.Trace("AiModelSelectionDialog::LoadRows");
         Rows.Clear();
         var store = AiSettingsStore.Load();
         if (store.Profiles.Count == 0)
@@ -46,6 +47,8 @@ public partial class AiModelSelectionDialog : Window
 
         if (!Rows.Any(x => x.IsActive) && Rows.Count > 0)
             Rows[0].IsActive = true;
+
+        Logger.Debug($"AI 模型配置加载完成: {Rows.Count} 个配置");
     }
 
     private void Add_Click(object sender, RoutedEventArgs e)
@@ -108,6 +111,7 @@ public partial class AiModelSelectionDialog : Window
 
     private void Save_Click(object sender, RoutedEventArgs e)
     {
+        using var _ = Logger.Trace("AiModelSelectionDialog::Save_Click");
         if (Rows.Count == 0) return;
         if (!Rows.Any(x => x.IsActive)) Rows[0].IsActive = true;
 
@@ -118,7 +122,9 @@ public partial class AiModelSelectionDialog : Window
             DefaultId = Rows.FirstOrDefault(x => x.IsDefault)?.Settings.Id
         };
         store.Save();
-        _chatVm.ApplySettings(store.ResolveActive());
+        var active = store.ResolveActive();
+        Logger.Info($"AI 模型配置保存完成: active provider={active.ProviderKey}, model={active.Model}");
+        _chatVm.ApplySettings(active);
         DialogResult = true;
         Close();
     }

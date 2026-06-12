@@ -63,6 +63,7 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>    <!-- 标签栏 -->
             <RowDefinition Height="Auto"/>    <!-- 导航栏+进度条 -->
+            <RowDefinition Height="Auto"/>    <!-- 收藏栏 -->
             <RowDefinition Height="*"/>       <!-- 主内容区域 -->
             <RowDefinition Height="Auto"/>    <!-- 状态栏 -->
         </Grid.RowDefinitions>
@@ -179,6 +180,8 @@
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
 
                 <!-- 后退 -->
@@ -232,8 +235,22 @@
                     </Grid>
                 </Border>
 
+                <!-- 收藏按钮 -->
+                <Button Grid.Column="4" Content="收藏" Width="54" Height="30"
+                        Command="{Binding AddBookmarkCommand}"
+                        Background="#3A3A3E" BorderThickness="0"
+                        Foreground="White" FontSize="12"
+                        Margin="6,0,0,0" Cursor="Hand"
+                        ToolTip="收藏当前页面">
+                    <Button.Resources>
+                        <Style TargetType="Border">
+                            <Setter Property="CornerRadius" Value="4"/>
+                        </Style>
+                    </Button.Resources>
+                </Button>
+
                 <!-- 转到按钮 -->
-                <Button Grid.Column="4" Content="转到" Width="50" Height="30"
+                <Button Grid.Column="5" Content="转到" Width="50" Height="30"
                         Command="{Binding NavigateCommand}"
                         Background="#0078D4" BorderThickness="0"
                         Foreground="White" FontSize="12"
@@ -245,6 +262,104 @@
                         </Style>
                     </Button.Resources>
                 </Button>
+
+                <!-- 历史记录按钮 -->
+                <Button Grid.Column="6" x:Name="HistoryBtn" Content="历史" Width="54" Height="30"
+                        Command="{Binding ShowHistoryCommand}"
+                        Background="#3A3A3E" BorderThickness="0"
+                        Foreground="White" FontSize="12"
+                        Margin="6,0,0,0" Cursor="Hand"
+                        ToolTip="浏览历史记录">
+                    <Button.Resources>
+                        <Style TargetType="Border">
+                            <Setter Property="CornerRadius" Value="4"/>
+                        </Style>
+                    </Button.Resources>
+                </Button>
+
+                <!-- 历史记录弹出面板 -->
+                <Popup x:Name="HistoryPopup" PlacementTarget="{Binding ElementName=HistoryBtn}"
+                       Placement="Bottom" StaysOpen="False"
+                       PopupAnimation="Slide"
+                       AllowsTransparency="True">
+                    <Border Background="#2A2A2E" BorderBrush="#4A4A4E" BorderThickness="1"
+                            CornerRadius="6" Padding="4" MinWidth="280" MaxWidth="400"
+                            MaxHeight="350">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+                            <TextBlock Grid.Row="0" Text="历史记录" Foreground="#CCC"
+                                       FontSize="13" FontWeight="SemiBold"
+                                       Margin="8,6,8,6"/>
+                            <ListBox Grid.Row="1" ItemsSource="{Binding History}"
+                                     Background="#1E1E22" BorderThickness="0"
+                                     Foreground="#EEE" FontSize="12"
+                                     ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                     SelectedIndex="-1">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Padding="8,6" Background="#1E1E22"
+                                                CornerRadius="4" Cursor="Hand"
+                                                BorderThickness="0">
+                                            <Border.InputBindings>
+                                                <MouseBinding MouseAction="LeftClick"
+                                                              Command="{Binding DataContext.OpenHistoryCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                              CommandParameter="{Binding}"/>
+                                            </Border.InputBindings>
+                                            <Grid>
+                                                <Grid.RowDefinitions>
+                                                    <RowDefinition Height="Auto"/>
+                                                    <RowDefinition Height="Auto"/>
+                                                </Grid.RowDefinitions>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Grid.Row="0" Grid.Column="0"
+                                                           Text="{Binding Title}" Foreground="#EEE"
+                                                           FontSize="12" TextTrimming="CharacterEllipsis"
+                                                           MaxWidth="240"/>
+                                                <TextBlock Grid.Row="0" Grid.Column="1"
+                                                           Text="{Binding VisitedAt, StringFormat='{}{0:HH:mm}'}"
+                                                           Foreground="#777" FontSize="11"
+                                                           Margin="8,0,0,0"/>
+                                                <TextBlock Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2"
+                                                           Text="{Binding Url}" Foreground="#888"
+                                                           FontSize="10" TextTrimming="CharacterEllipsis"
+                                                           MaxWidth="360"/>
+                                            </Grid>
+                                        </Border>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                                <ListBox.ItemContainerStyle>
+                                    <Style TargetType="ListBoxItem">
+                                        <Setter Property="Background" Value="Transparent"/>
+                                        <Setter Property="BorderThickness" Value="0"/>
+                                        <Setter Property="Padding" Value="0"/>
+                                        <Setter Property="Template">
+                                            <Setter.Value>
+                                                <ControlTemplate TargetType="ListBoxItem">
+                                                    <Border Background="{TemplateBinding Background}"
+                                                            BorderThickness="0"
+                                                            Padding="0">
+                                                        <ContentPresenter/>
+                                                    </Border>
+                                                    <ControlTemplate.Triggers>
+                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                            <Setter Property="Background" Value="#3A3A3E"/>
+                                                        </Trigger>
+                                                    </ControlTemplate.Triggers>
+                                                </ControlTemplate>
+                                            </Setter.Value>
+                                        </Setter>
+                                    </Style>
+                                </ListBox.ItemContainerStyle>
+                            </ListBox>
+                        </Grid>
+                    </Border>
+                </Popup>
             </Grid>
         </Border>
 
@@ -255,11 +370,42 @@
                      VerticalAlignment="Bottom"
                      Visibility="Collapsed"/>
 
+        <!-- ======== 收藏栏 ======== -->
+        <Border Grid.Row="2" Background="#252529" Padding="8,4"
+                BorderBrush="#3A3A3E" BorderThickness="0,0,0,1"
+                Visibility="{Binding HasBookmarks, Converter={x:Static local:Converters.BoolToVisibilityConverter}}">
+            <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
+                <ItemsControl ItemsSource="{Binding Bookmarks}">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <StackPanel Orientation="Horizontal"/>
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Button Content="{Binding Title}"
+                                    Command="{Binding DataContext.OpenBookmarkCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                    CommandParameter="{Binding}"
+                                    Background="#303034"
+                                    BorderBrush="#4A4A4E"
+                                    BorderThickness="1"
+                                    Foreground="#DDD"
+                                    FontSize="12"
+                                    Padding="10,3"
+                                    Margin="0,0,6,0"
+                                    Cursor="Hand"
+                                    ToolTip="{Binding Url}"/>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </ScrollViewer>
+        </Border>
+
         <!-- ======== 主内容：浏览器全屏 ======== -->
-        <Grid x:Name="ContentArea" Grid.Row="2" Background="#1E1E22"/>
+        <Grid x:Name="ContentArea" Grid.Row="3" Background="#1E1E22"/>
 
         <!-- ======== 状态栏 ======== -->
-        <Border Grid.Row="3" Background="#252529" Padding="10,3" BorderBrush="#3A3A3E" BorderThickness="0,1,0,0">
+        <Border Grid.Row="4" Background="#252529" Padding="10,3" BorderBrush="#3A3A3E" BorderThickness="0,1,0,0">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto"/>

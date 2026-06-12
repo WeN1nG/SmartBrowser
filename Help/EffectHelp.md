@@ -1,5 +1,70 @@
 # 功能实现模拟文档
 
+## 功能 9：全部标签关闭后重新打开收藏页的 WebView2 生命周期修复 — 2026-06-11
+
+```
+异常复现路径:
+用户关闭最后一个标签
+  -> BrowserViewModel.CloseTab(id)
+      -> Tabs.Remove(tab)
+      -> ActiveTab = null
+      -> TabClosed(id)
+  -> MainWindow.OnTabClosed(id)
+      -> BrowserHostService.CloseTabAsync(id)
+      -> 移除并 Dispose WebView2
+  -> 用户点击收藏
+      -> BrowserViewModel.OpenBookmark(bookmark)
+          -> ActiveTab == null
+          -> AddNewTab(url)
+              -> Tabs.Add(tab)
+              -> ActiveTab = tab
+问题: MainWindow 旧逻辑只在 ActiveTab 变化时尝试创建 WebView2；若集合新增和激活事件时序未覆盖，后续导航/自动化会面对没有 WebView2 的标签。
+
+修复后路径:
+用户点击收藏 / 新建标签
+  -> BrowserViewModel.AddNewTab(url)
+      -> Tabs.Add(tab)
+  -> MainWindow.Tabs.CollectionChanged(Add)
+      -> EnsureAddedTabWebViewAsync(tab)
+          -> EnsureTabWebViewAsync(tab)
+              -> BrowserHostService.CreateTabForAsync(tab, tab.Url)
+              -> BrowserAutomationService.BindWebView(tab.Id, webView)
+          -> 如果该 tab 仍是 ActiveTab
+              -> ActivateTabWebView(tab.Id)
+  -> finall(): 新标签始终创建并绑定 WebView2，关闭标签异常被 OnTabClosed 捕获写入日志。
+```
+
+## 功能 10：应用未处理异常日志兜底 — 2026-06-11
+
+```
+应用启动
+  -> App.OnStartup()
+      -> 注册 AppDomain.CurrentDomain.UnhandledException
+      -> 注册 DispatcherUnhandledException
+      -> 注册 TaskScheduler.UnobservedTaskException
+      -> Logger.AllocConsole()
+
+运行期异常
+  |-- UI 线程异常
+  |     -> OnDispatcherUnhandledException()
+  |     -> Logger.Exception("UI 线程未处理异常", ex)
+  |     -> e.Handled = true
+  |-- 后台 Task 未观察异常
+  |     -> OnUnobservedTaskException()
+  |     -> Logger.Exception("未观察到的 Task 异常", aggregateException)
+  |     -> e.SetObserved()
+  |-- 进程级未处理异常
+        -> OnUnhandledException()
+        -> Logger.Exception("AppDomain 未处理异常", ex)
+
+应用退出
+  -> App.OnExit()
+      -> 输出退出代码
+      -> 解除异常事件订阅
+      -> finall(): 下次异常退出前日志能保留异常类型、消息和堆栈。
+```
+
+
 ## 功能 1：聊天记录点击跳转
 
 ```
@@ -265,6 +330,69 @@ AiSecondaryWindow
       -> UpdateTodoItem(id, ..., completed/blocked)
       -> 右侧只更新状态，不新增计划外子任务
 
+## 功能 7：AI 任务分解强制门禁 — 2026-06-09 实现
+
+```
+用户输入任意任务
+  -> ChatViewModel.SendAsync()
+      -> AiClient.BuildOpenAIRequest()/BuildAnthropicRequest()
+          -> ResolveRequiredPlanningTool(messages)
+              |-- 尚无工具结果：必须先调用 update_todo
+              |-- 已有 update_todo 但尚无 start_subtask：必须先调用 start_subtask
+              |-- 已进入子任务执行：不强制工具
+          -> OpenAI 兼容请求
+              |-- 支持强制 tool_choice：发送 function tool_choice
+              |-- DeepSeek/火山方舟/Thinking 等不兼容强制 tool_choice：省略 tool_choice 字段，改由系统提示推动规划工具，避免 API 400 InvalidParameter
+          -> Anthropic 原生请求：发送 Anthropic tool_choice
+      -> AI 首轮必须调用 update_todo(items=[完整子任务清单])
+          -> ChatViewModel.ExecuteAiToolAsync("update_todo")
+              |-- items 为空：拒绝并提示重新拆分，保留现有清单
+              |-- items 有效：TodoItems.Clear() + TodoItems.Add(...)
+      -> AI 下一轮必须调用 start_subtask(id)
+          -> 若 id 未预登记：返回错误，要求先 update_todo
+          -> 若 id 已预登记：标为 in_progress 并触发上下文压缩
+      -> 后续浏览器/信息收集工具正常执行
+      -> finall()：右侧待办清单不再保持为空，且第一个动作就是任务分解
+
+模型配置协议修正:
+  AiSettingsStore.Load()/Save()
+      -> NormalizeProviderProtocols()
+          |-- 火山 endpoint 为 /api/coding
+              -> 自动补齐为 /api/coding/v3，避免正式请求拼成 /api/coding/chat/completions 后 404
+          |-- provider=anthropic 且 endpoint 为 ark/openai/chat/completions/compatible-mode
+              -> 自动改为 volcengine-ark 或 custom
+  AiClient.Settings setter
+      -> NormalizeSettingsProtocol()
+          |-- 运行时再次兜底修正火山 endpoint 与错配协议
+  AiClient.ConfigureHeaders()
+      |-- 真 Anthropic 原生端点：x-api-key + /v1/messages
+      |-- OpenAI 兼容端点：Bearer + /chat/completions
+  -> 避免“测试连接可用，但任务循环误走 Anthropic 协议导致 Unauthorized”
+```
+
+## 功能 8：AI 输出思考过程 / 结论分区 — 2026-06-09 实现
+
+```
+AiClient 流式返回 chunk
+  -> ChatViewModel.aiMsg.AppendContent(chunk)
+      -> ChatMessage.Content 保留完整原文，不改变 API / 会话保存格式
+  -> aiMsg.NotifyContentChanged()
+      -> Notify Content / ThinkingContent / ConclusionContent / HasThinkingContent
+  -> AiChatPanel Assistant 消息模板
+      -> AssistantResponseParser.Parse(Content)
+          |-- 显式标记：[思考过程] / [结论] / <think>...</think>
+          |-- 启发式：The user wants / Let me / 上一步评估 / 记忆 / 下一目标 → 思考过程
+          |-- 结论起点：通过...来看 / 准确说 / 所以 / 答案是 → 结论
+          |-- 代码块内部不切分
+      -> [思考过程] Expander 默认折叠；无思考内容则隐藏
+      -> [结论] FlowDocument 始终显示
+  -> AiChatPanel.OnMessagePropertyChanged(Content)
+  -> ScrollToBottom()
+  -> Dispatcher.BeginInvoke(ContextIdle)
+  -> MessageScroller.ScrollToBottom()
+  -> 用户默认只看到最终结论，可按需展开查看思考过程
+```
+
 最新输出保持可见:
 ───────────────────────────────────────────────────────────────
 AiClient 流式返回 chunk
@@ -275,6 +403,19 @@ AiClient 流式返回 chunk
   -> Dispatcher.BeginInvoke(ContextIdle)
   -> MessageScroller.ScrollToBottom()
   -> 用户看到最新输出
+
+未完成子任务防误结束:
+────────────────────────────────
+AiClient.ExecuteConversationAsync()
+  -> AI 返回纯文本、没有工具调用
+  -> ShouldContinueOpenSubtask(messages, fullText)
+      |-- 没有开放子任务：按普通最终回复结束
+      |-- 存在 start_subtask 且之后没有 finish_subtask：注入 system reminder，要求继续调用工具 / finish_subtask / ask_user
+      |-- 连续 3 次仍只输出文本：返回带“当前任务尚未完成”的阶段性提示
+  -> ChatViewModel.GetStatusMessageAfterToolLoop(content)
+      |-- 检测到“当前任务尚未完成” -> StatusMessage = “任务未完成，等待继续…”
+      |-- 否则 -> StatusMessage = “就绪”
+  -> finall(): 不再把开放子任务的阶段性说明误显示为已完成状态
 
 稳定性处理:
 ───────────────────────────────────────────────────────────────
@@ -291,4 +432,220 @@ AiChatPanel.Unloaded
   MarkdownToFlowDocumentConverter.Convert()
     -> markdown.Length > 12000 ? 仅渲染末尾 12000 字符 : 全量渲染
     -> 降低 WPF FlowDocument 反复构建压力
+```
+
+## 功能 11：WebView2 标签生命周期管理 — 2026-06-11
+
+```
+用户点击新建标签
+  -> BrowserViewModel.NewTabCommand
+  -> BrowserViewModel.AddNewTab(url)
+      -> Tabs.Add(tab)
+      -> ActiveTab = tab
+  -> MainWindow.Tabs.CollectionChanged(Add)
+      -> EnsureAddedTabWebViewAsync(tab)
+          -> EnsureTabWebViewAsync(tab)
+              -> BrowserHostService.CreateTabForAsync(tab, tab.Url)
+                  -> WebView2 实例化 → 加入 ContentArea 容器
+                  -> wv.EnsureCoreWebView2Async(_environment)
+                  -> ConfigureCoreWebView2(wv.CoreWebView2)
+                      -> ScriptEnabled=true, WebMessageEnabled=true, DevTools=true
+                  -> BindCoreEvents(tab, wv)
+                      -> NavigationStarting/Completed/DocumentTitleChanged/SourceChanged
+                      -> DownloadStarting/ScriptDialogOpening/NewWindowRequested/ProcessFailed
+                  -> _webViews[tab.Id] = wv
+                  -> wv.CoreWebView2.Navigate(url)
+              -> BrowserAutomationService.BindWebView(tab.Id, wv)
+          -> ActivateTabWebView(tab.Id)
+              -> BrowserHostService.ActivateTab(tab.Id) (Visibility 切换)
+              -> BrowserAutomationService.SwitchToTab(tab.Id)
+  -> finall(): 新标签完整创建并绑定 WebView2 与自动化服务
+
+用户关闭标签
+  -> BrowserViewModel.CloseTab(guid)
+      -> Tabs.Remove(tab)
+      -> TabClosed?.Invoke(guid)
+  -> MainWindow.OnTabClosed(guid)
+      -> BrowserHostService.CloseTabAsync(guid)
+          -> _webViews.Remove(guid)
+          -> _container.Children.Remove(wv)
+          -> wv.Dispose()
+      -> BrowserAutomationService.UnbindWebView(guid)
+  -> finall(): WebView2 控件已释放，自动化绑定已解除
+
+用户切换标签
+  -> BrowserViewModel.ActivateTab(id)
+      -> ActiveTab = tab
+      -> TabActivated?.Invoke(id)
+  -> MainWindow.OnTabActivated(id)
+      -> BrowserHostService.GetWebViewForTab(id) == null ? CreateTabForAsync : 直接激活
+      -> BrowserHostService.ActivateTab(id) (Visibility 切换)
+      -> BrowserAutomationService.SwitchToTab(id)
+      -> 同步 URL/Title 到 ChatViewModel
+  -> finall(): 目标 WebView2 Visible，其余 Collapsed
+```
+
+## 功能 12：AI 工具调用与路由 — 2026-06-11
+
+```
+AI 调用 browser_snapshot
+  -> AiClient.ExecuteConversationAsync()
+      -> ParseOpenAILineRich/ParseAnthropicLineRich 解析 tool_calls
+      -> toolCallAcc[idx] = ToolCallData { FunctionName="browser_snapshot", ... }
+  -> ChatViewModel.ExecuteAiToolAsync("browser_snapshot", args)
+      -> _automationRouter.IsToolRegistered("browser_snapshot") → true
+      -> _automationRouter.InvokeAsync("browser_snapshot", args)
+          -> _automation.GetSnapshotAsync()
+              -> InvokeJsCallAsync(AutomationScripts.GetSnapshotCall, "快照", returnRawJson=true)
+                  -> RunOnUiThreadAsync(wv => wv.CoreWebView2.ExecuteScriptAsync(bermainA11y.getSnapshot()))
+                      -> StripQuotes(raw) → JSON 字符串
+      -> Format(AutomationResult) → JSON序列化 {ok, data, url, ms}
+  -> AiClient 将结果追加为 Tool 消息 → 继续下一轮迭代
+  -> finall(): 页面快照以结构化 JSON 返回 AI
+
+AI 调用 browser_click
+  -> AiClient → ChatViewModel.ExecuteAiToolAsync("browser_click", {element_id: 5})
+      -> _automationRouter.InvokeAsync → ClickAsync(5)
+          -> InvokeJsCallAsync(bermainA11y.clickElement(5), "点击")
+              -> 定位 data-bermain-id="5" 元素 → el.click()
+              -> 检查 JS 返回值中的 error 字段
+          -> 解析 error/success → Format()
+  -> finall(): 点击操作结果 JSON 返回 AI
+
+ask_user 暂停流程
+  -> AI 调用 ask_user(question, question_type, options)
+  -> ChatViewModel.ExecuteAiToolAsync("ask_user", args)
+      -> 解析 question/question_type/options/context_summary
+      -> 生成 QuestionId = "q_HHmmssfff_Guid"
+      -> 返回 "__ASK_USER_PAUSED__:{UserQuestionInfo JSON}"
+  -> AiClient.ExecuteConversationAsync 检测 __ASK_USER_PAUSED__:
+      -> messages 追加占位 Tool 消息 (Content="等待用户回答…")
+      -> yield chunk("__ASK_USER_PAUSED__:...") → yield break
+  -> ChatViewModel.SendAsync 检测暂停标记
+      -> IsAwaitingUserInput = true
+      -> PendingAskUserQuestion = questionInfo
+      -> _pendingMessages = mutableMessages, _pendingAiMsg = aiMsg
+      -> ShowAskUserPromptMessage(questionInfo)
+  -> UI 显示问题卡片（confirmation/multiple_choice/open_ended）
+  -> 用户选择选项
+      -> RespondToQuestionAsync(option)
+          -> DeactivateAskUserPromptMessage(answer)
+          -> 替换占位 Tool 消息 Content = answer
+          -> ContinueToolLoopAsync(pendingMsgs, pendingAi, ct)
+              -> _aiClient.ExecuteConversationAsync(messages, ExecuteAiToolAsync, ct)
+                  -> AI 收到 user 回答 → 继续执行工具调用
+  -> finall(): 工具循环恢复执行
+
+上下文压缩
+  -> AiClient.ExecuteConversationAsync 每轮迭代开始
+      -> EstimateConversationBytes(messages) > 120000 ?
+      -> CompressHistory(messages, 90000, runtimeToolEvidence)
+          -> FindCompressionBoundary: 从后往前找最近 Assistant 边界
+          -> ApplyCompression: 旧消息替换为 System 摘要
+              -> 记录已调用工具名 + 助手文本摘要 + 工具结果摘要
+              -> 插入 tool_evidence 注释
+          -> 循环直到 < 90000 字节
+  -> finall(): 历史压缩到 ~90KB，保留工具执行证据
+```
+
+## 功能 13：AI 提供商协议自动修正 — 2026-06-11
+
+```
+应用启动
+  -> App.OnStartup()
+      -> AiSettingsStore.Load()
+          -> 读取 ai_settings.json
+          -> NormalizeProviderProtocols()
+              -> 遍历每个 profile
+              -> NormalizeProviderProtocol(profile)
+                  -> NormalizeArkCodingEndpoint(profile)
+                      -> endpoint 含 "volces.com" && 以 "/api/coding" 结尾
+                      -> fixedEndpoint = endpoint + "/v3"
+                      -> profile.Endpoint = fixedEndpoint
+                  -> provider=anthropic && endpoint 是 OpenAI 兼容
+                      -> providerKey = "volcengine-ark" 或 "custom"
+      -> Save() → 持久化修正后的配置
+
+AI 请求时
+  -> AiClient.StreamMessageAsync()
+      -> ConfigureHeaders()
+          -> IsAnthropicProvider()
+              -> ProviderKey="anthropic" && endpoint 不是 OpenAI 兼容
+              -> x-api-key + anthropic-version: 2023-06-01
+              -> 否则: Bearer Token
+  -> BuildOpenAIRequest() / BuildAnthropicRequest()
+      -> 根据 provider 选择请求格式
+      -> 注入系统提示词 + 工具定义 + 消息历史
+  -> finall(): 不同提供商使用正确的认证方式和 API 格式
+```
+
+## 功能 14：下载管理与历史记录 — 2026-06-11
+
+```
+WebView2 下载开始
+  -> BrowserHostService.BindCoreEvents()
+      -> core.DownloadStarting += (_, args)
+          -> var item = new DownloadItem {...}
+          -> DownloadManager.Add(item)
+              -> Dispatcher.Invoke(() => Items.Insert(0, item))
+          -> operation.BytesReceivedChanged += ()
+              -> DownloadManager.Update(item, x => x.BytesReceived = ...)
+          -> operation.StateChanged += ()
+              -> DownloadManager.Update(item, x => x.State = ...)
+                  -> Completed → DownloadItemState.Completed
+                  -> Interrupted → DownloadItemState.Failed
+
+导航完成时记录历史
+  -> BrowserHostService.BindCoreEvents()
+      -> core.NavigationCompleted += (_, args)
+          -> _vm.RecordHistoryEntry(info.Url, tab?.Title)
+              -> 最后一条同 URL → 移除重新插入（去重刷新）
+              -> 新 HistoryInfo 插入头部
+              -> History.Count > 500 → 尾部自动移除
+          -> HistoryService.SaveHistory(_vm.History)
+              -> 序列化 → history.json
+
+用户操作书签/历史
+  -> BrowserViewModel.AddCurrentPageToBookmarks()
+      -> ActiveTab != null && URL 有效
+      -> 检查是否已收藏（URL 去重）
+      -> BookmarkInfo → Bookmarks.Add(bookmark)
+      -> BookmarkService.SaveBookmarks() → bookmarks.json
+  -> BrowserViewModel.OpenBookmark(bookmark)
+      -> ActiveTab == null ? AddNewTab(url) : 导航到 url
+  -> BrowserViewModel.OpenHistory(history)
+      -> ActiveTab == null ? AddNewTab(url) : 导航到 url
+  -> finall(): 书签和历史持久化到 JSON 文件
+```
+
+## 功能 15：流式输出与 UI 渲染 — 2026-06-11
+
+```
+AI 流式文本到达
+  -> AiClient.ParseStreamAsync()
+      -> reader.ReadLineAsync() → "data: {chunk}"
+      -> ParseOpenAILine() / ParseAnthropicLine()
+      -> yield chunk
+  -> ChatViewModel.SendAsync()
+      -> aiMsg.AppendContent(chunk)
+      -> aiMsg.NotifyContentChanged()
+          -> OnPropertyChanged("Content")
+          -> OnPropertyChanged("ThinkingContent/ConclusionContent/HasThinkingContent/...")
+  -> AiChatPanel.OnMessagePropertyChanged()
+      -> ScrollToBottom()
+          -> Dispatcher.BeginInvoke(ContextIdle, ScrollToBottom)
+  -> finall(): UI 实时显示 AI 输出，思考/结论分区渲染
+
+AI 回复完成
+  -> FinalizeAssistantMessage(aiMsg)
+      -> AssistantResponseParser.ParseAndClean(Content.Trim())
+          -> StripLeadingJsonBlocks(content) → 剥离重复 JSON blob
+          -> ParseExplicitSections(content) → [思考过程]/[结论] 显式标记
+          -> FindHeuristicConclusionStart(content) → 启发式切分
+          -> StripTrailingJsonWords(conclusion) → 剥离尾部 JSON 词
+      -> aiMsg.ReplaceContentSilently(finalContent)
+      -> aiMsg.NotifyContentChanged()
+  -> AutoSave() → ConversationService.SaveConversation()
+  -> UpdateTokenEstimate() → Messages.Sum(m.Content.Length / 2)
+  -> finall(): 最终结论存入消息、对话自动保存、令牌估算更新
 ```

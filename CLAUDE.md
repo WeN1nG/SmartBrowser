@@ -328,6 +328,13 @@ Only work on `SkillSystemIntegration`, `PlaywrightMcpClient`, `McpSkillExecutor`
 - Do not revive or depend on `WebView2AutomationBridge.cs`; it is `#if false` dead code.
 - Do not assume `ChromeProcessManager` or Playwright MCP is active in the running app.
 
+## 项目理解准则
+
+每次执行任务前，先执行以下步骤以更新对项目的理解：
+
+1. **刷新 codegraph 索引**：在 `.claude/settings.json` 已配置 codegraph MCP 的前提下，优先使用 `mcp__codegraph__codegraph_context` 获取项目整体上下文，再通过 `mcp__codegraph__codegraph_trace` / `mcp__codegraph__codegraph_explore` 追溯具体流程，确保对 `.codegraph` 索引下的符号和调用关系有最新理解后再进行修改。
+2. **查阅 Help 目录下的理解文档**：`Help/` 目录下包含对项目功能说明（`FunctionHelp.md`、`EffectHelp.md`）和逐项修复记录（`Help/Debugg/`）的详细文档。修改功能前应先阅读相关文件，了解历史背景、已知问题和修复脉络，避免重复踩坑。
+
 ## Common Debugging Notes
 
 - **AI says no API key**: configure a model profile through `AiModelSelectionDialog`; settings save to `ai_settings.json` beside the executable.
