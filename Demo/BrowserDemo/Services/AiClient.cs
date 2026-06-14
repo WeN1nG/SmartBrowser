@@ -13,9 +13,16 @@ namespace BrowserDemo.Services;
 public class AiClient : IAiClient, IDisposable
 {
     /// <summary>上下文压缩触发阈值（字节）——超过此值自动压缩</summary>
-    private const int ContextCompressionTriggerBytes = 80_000;
+    private const int ContextCompressionTriggerBytes = 50_000;
     /// <summary>上下文压缩目标值（字节）——压缩后维持在此值以下</summary>
-    private const int ContextCompressionTargetBytes = 60_000;
+    private const int ContextCompressionTargetBytes = 40_000;
+    /// <summary>子任务完成时最大压缩目标值（字节）——子任务完成时压缩到此值以下</summary>
+    private const int ContextCompressionMaxTargetBytes = 30_000;
+
+    /// <summary>工具结果最大字符数 —— 超出后自动截断并替换为摘要</summary>
+    private const int MaxToolResultChars = 2_000;
+    /// <summary>截断后保留尾部字符数（用于看到最新输出）</summary>
+    private const int TruncateTailChars = 500;
 
     /// <summary>速率限制重试最大次数</summary>
     private const int MaxRateLimitRetries = 3;
@@ -36,12 +43,25 @@ public class AiClient : IAiClient, IDisposable
 
     /// <summary>子任务仍未结束时，AI 连续输出普通文本的次数——用于防止阶段性文字被当成最终完成</summary>
     private int _consecutiveOpenSubtaskTextReplies = 0;
+    /// <summary>子任务门禁连续触发上限——超过阈值则终止本轮请求</summary>
+    private const int MaxSubtaskGateTrips = 5;
+
+    /// <summary>工具循环硬上限——防止无限迭代（即使 AI 不响应提醒也强制终止）</summary>
+    private const int MaxHardIterations = 80;
+
+    /// <summary>browser_js 连续返回 null 的轮数（用于自诊断）</summary>
+    private int _consecutiveJsNullResults = 0;
 
     /// <summary>上次探测的 URL，用于检测重复探测</summary>
     private string? _lastProbedUrl = null;
 
     /// <summary>探测结果缓存，换 URL 时清除</summary>
     private string? _lastProbeResult = null;
+
+    /// <summary>AI 最近几轮纯文本回复摘要（用于复读检测）</summary>
+    private readonly Queue<(string Hash, string Preview)> _recentAiTextFingerprints = new();
+    /// <summary>复读检测阈值：连续 N 轮返回高度相似的文本 → 视为复读</summary>
+    private const int MaxConsecutiveAiRepeats = 2;
 
     /// <summary>记录一次探测结果，返回是否是对同一 URL 的重复探测</summary>
     public bool ReportProbe(string url, string result)
@@ -651,8 +671,20 @@ public class AiClient : IAiClient, IDisposable
     {
         var eventHandler = new AgentEventSelfHandler();
 
+        // 每次新的 ExecuteConversationAsync 调用视为一次独立的对话轮次，
+        // 重置子任务门禁计数器，让 AI 有机会重新推理而不被上一轮的计数牵连
+        _consecutiveOpenSubtaskTextReplies = 0;
+
         for (int iteration = 0; ; iteration++)
         {
+            // ★★★ 硬上限检测：无论任何提醒都强制终止，防止无限循环 ★★★
+            if (iteration >= MaxHardIterations)
+            {
+                Logger.Warning($"工具循环硬上限触发: 已达到 {MaxHardIterations} 轮，强制终止");
+                yield return $"\n\n⛔ 工具调用已超过 {MaxHardIterations} 轮，系统强制终止本次请求。AI 可能陷入了无法自行解决的循环，请尝试重新开始任务或手动操作当前页面。";
+                yield break;
+            }
+
             Logger.Info($"工具循环 迭代 #{iteration + 1}, 消息数={messages.Count}");
 
             // ★★★ 上下文压缩：超过阈值时立即压缩到目标值以下 ★★★
@@ -781,9 +813,9 @@ public class AiClient : IAiClient, IDisposable
                     _consecutivePlanningGateTrips++;
                     if (_consecutivePlanningGateTrips >= 5)
                     {
-                        Logger.Warning($"规划门禁连续 {_consecutivePlanningGateTrips} 次触发仍未生效，放弃强制要求，接受 AI 文本输出");
+                        Logger.Warning($"规划门禁连续 {_consecutivePlanningGateTrips} 次触发仍未生效，终止请求");
                         _consecutivePlanningGateTrips = 0;
-                        // 退回到普通文本输出路径，不再强制要求工具调用
+                        yield break;
                     }
                     else
                     {
@@ -803,21 +835,22 @@ public class AiClient : IAiClient, IDisposable
                 if (ShouldContinueOpenSubtask(messages, fullText, out var subtaskReminder))
                 {
                     _consecutiveOpenSubtaskTextReplies++;
-                    if (_consecutiveOpenSubtaskTextReplies <= 3)
+                    if (_consecutiveOpenSubtaskTextReplies <= MaxSubtaskGateTrips)
                     {
-                        Logger.Warning($"子任务门禁: 当前仍有未完成子任务，AI 输出了阶段性文本，回传提醒继续 (第 {_consecutiveOpenSubtaskTextReplies} 次)");
+                        // 清理上一轮的子任务提醒，避免堆积污染上下文
+                        messages.RemoveAll(m => m.Role == MessageRole.System &&
+                            m.Content.StartsWith("当前仍有已开始但尚未结束的子任务", StringComparison.OrdinalIgnoreCase));
                         messages.Add(new ChatMessage
                         {
                             Role = MessageRole.System,
                             Content = subtaskReminder,
                             Timestamp = DateTime.Now
                         });
+                        Logger.Warning($"子任务门禁: 当前仍有未完成子任务，回传提醒继续 (第 {_consecutiveOpenSubtaskTextReplies} 次)");
                         continue;
                     }
 
-                    Logger.Warning("子任务门禁连续 3 次仍未生效，接受 AI 文本输出但标记为未完成状态");
-                    var progressText = BuildOpenSubtaskProgressText(fullText);
-                    yield return progressText;
+                    Logger.Warning($"子任务门禁连续 {_consecutiveOpenSubtaskTextReplies} 次仍未生效，AI 持续输出文本而不执行工具，终止本轮请求");
                     yield break;
                 }
 
@@ -826,6 +859,37 @@ public class AiClient : IAiClient, IDisposable
                 // 纯文本回复 结束
                 // 清理 AI 回复中回显的重复 JSON blob
                 var cleanedText = StripRedundantJsonBlocks(fullText);
+                if (!string.IsNullOrEmpty(cleanedText) && cleanedText != fullText)
+                {
+                    Logger.Info($"AI 最终回复清理: {fullText.Length} → {cleanedText.Length} 字符（剥离了 {fullText.Length - cleanedText.Length} 字符的重复 JSON）");
+                }
+
+                // ★★★ 复读检测：连续多轮返回高度相似的文本 → 视为复读，注入提醒 ★★★
+                var fingerprint = ComputeAiTextFingerprint(cleanedText);
+                var prevHash = _recentAiTextFingerprints.FirstOrDefault().Hash;
+                if (!string.IsNullOrEmpty(prevHash) && fingerprint == prevHash && cleanedText.Length > 30)
+                {
+                    _recentAiTextFingerprints.Enqueue((fingerprint, cleanedText));
+                    // 保留最近 3 轮的指纹
+                    while (_recentAiTextFingerprints.Count > 3)
+                        _recentAiTextFingerprints.Dequeue();
+
+                    var consecutiveRepeats = _recentAiTextFingerprints.Count(t => t.Hash == fingerprint);
+                    if (consecutiveRepeats >= MaxConsecutiveAiRepeats)
+                    {
+                        Logger.Warning($"AI 复读检测: 连续 {consecutiveRepeats} 轮返回高度相似的文本（{cleanedText.Length} 字符）");
+                        _recentAiTextFingerprints.Clear();
+                        yield return cleanedText;
+                        yield break;
+                    }
+                }
+                else
+                {
+                    _recentAiTextFingerprints.Enqueue((fingerprint, cleanedText));
+                    while (_recentAiTextFingerprints.Count > 3)
+                        _recentAiTextFingerprints.Dequeue();
+                }
+
                 if (!string.IsNullOrEmpty(cleanedText) && cleanedText != fullText)
                 {
                     Logger.Info($"AI 最终回复清理: {fullText.Length} → {cleanedText.Length} 字符（剥离了 {fullText.Length - cleanedText.Length} 字符的重复 JSON）");
@@ -839,6 +903,12 @@ public class AiClient : IAiClient, IDisposable
             }
             // ---- 处理工具调用 ----
             _consecutivePlanningGateTrips = 0;
+            if (_consecutiveOpenSubtaskTextReplies > 0)
+            {
+                // 重置计数器并清理之前堆积的子任务提醒消息
+                messages.RemoveAll(m => m.Role == MessageRole.System &&
+                    m.Content.StartsWith("当前仍有已开始但尚未结束的子任务", StringComparison.OrdinalIgnoreCase));
+            }
             _consecutiveOpenSubtaskTextReplies = 0;
             Logger.Info($"工具循环: AI 请求了 {toolCallAcc.Count} 个工具调用");
 
@@ -900,10 +970,39 @@ public class AiClient : IAiClient, IDisposable
                     toolResult = toolResult["__SUBTASK_CONTEXT_COMPRESSED__:".Length..];
                 }
 
+                // ★★★ 子任务完成：最大强度压缩——清理已完成历史，只保留关键证据和最新上下文 ★★★
+                if (toolResult != null && toolResult.StartsWith("__SUBTASK_COMPLETED_COMPRESSED__:"))
+                {
+                    var beforeCount = messages.Count;
+                    var beforeBytes = EstimateConversationBytes(messages);
+                    CompressHistory(messages, ContextCompressionMaxTargetBytes, ContextBuilder.RuntimeToolEvidence);
+                    var afterBytes = EstimateConversationBytes(messages);
+                    Logger.Info($"子任务完成最大压缩: {beforeCount}条/{beforeBytes}字节 → {messages.Count}条/{afterBytes}字节");
+                    toolResult = toolResult["__SUBTASK_COMPLETED_COMPRESSED__:".Length..];
+                }
+
                 if (toolResult != null)
                 {
                     var snippet = toolResult.Length > 200 ? toolResult[..200] + "…" : toolResult;
                     Logger.Debug($"工具 {tc.FunctionName} 执行结果: {snippet}");
+
+                    // ★★★ browser_js 返回 null 检测：JS 执行成功但结果为空 → 提醒 AI 换策略 ★★★
+                    if (tc.FunctionName == "browser_js" && IsJsonNullResult(toolResult))
+                    {
+                        var jsNullCount = IncrementJsNullCount(tc.FunctionName);
+                        if (jsNullCount >= 2)
+                        {
+                            // 连续多次 JS 查询返回 null，注入系统提示建议换策略
+                            Logger.Warning($"browser_js 连续 {jsNullCount} 次返回 null，注入策略提示");
+                            var jsHint = $"[agent_event code=js_null_hint severity=warning]\nJS 查询连续 {jsNullCount} 次返回空结果，说明页面结构或元素与你预期的不同。instruction: 换一种 JS 查询逻辑（例如改用 querySelectorAll 遍历、检查父容器内容），或先调用 observe_browser 获取完整快照再决定。";
+                            messages.Add(new ChatMessage
+                            {
+                                Role = MessageRole.System,
+                                Content = jsHint,
+                                Timestamp = DateTime.Now
+                            });
+                        }
+                    }
 
                     // ★★★ 连续空结果检测：仅内容提取工具返回短内容 → 累加 ★★★
                     // skill_js 排除在外：JS 查询页面元素返回空是正常现象（元素不存在/跨域限制），不是卡死
@@ -923,13 +1022,21 @@ public class AiClient : IAiClient, IDisposable
                         _consecutiveStaleResults = 0;
                     }
 
+                    // ★★★ 截断过大的工具结果，防止污染 LLM 上下文 ★★★
+                    // browser_snapshot 可能返回整个 DOM 的数百 KB 数据，必须限制大小
+                    var displayResult = toolResult;
+                    if (toolResult.Length > MaxToolResultChars)
+                    {
+                        displayResult = TruncateToolResult(tc.FunctionName, toolResult);
+                    }
+
                     // 将工具执行结果添加到消息历史（供 AI 下一步推理）
                     messages.Add(new ChatMessage
                     {
                         Role = MessageRole.Tool,
                         ToolCallId = tc.Id,
                         ToolName = tc.FunctionName,
-                        Content = toolResult,
+                        Content = displayResult,
                         Timestamp = DateTime.Now
                     });
                     eventHandler.AfterToolExecution(tc.FunctionName, args, toolResult);
@@ -1425,6 +1532,19 @@ public class AiClient : IAiClient, IDisposable
     {
         reminder = string.Empty;
 
+        // ★★★ 状态机优先 ★★★
+        var sm = ContextBuilder.TaskStateMachine;
+        if (sm != null)
+        {
+            if (sm.CurrentState != TaskState.Executing || sm.IsComplete)
+                return false;
+            if (LooksLikeExplicitFinalOrBlockedReport(text))
+                return false;
+            reminder = "当前仍有已开始但尚未结束的子任务。不要把阶段性进展当成最终回复。请继续执行下一步工具调用；如果该子任务已经完成，先调用 `finish_subtask(status=\"completed\")`；如果无法继续，调用 `finish_subtask(status=\"blocked\")` 并说明原因；如果需要用户提供信息，调用 `ask_user`。";
+            return true;
+        }
+
+        // ★★★ 兜底：旧消息历史扫描逻辑 ★★★
         var hasTodoCreated = HasToolEvidence(messages, "update_todo") || ContextBuilder.RuntimeHasTodoItems;
         var lastStarted = messages
             .Where(m => m.Role == MessageRole.Tool && string.Equals(m.ToolName, "start_subtask", StringComparison.OrdinalIgnoreCase))
@@ -1634,6 +1754,27 @@ public class AiClient : IAiClient, IDisposable
         if (ContextBuilder is not { IsEnabled: true, RegisteredTools.Count: > 0 })
             return null;
 
+        var sm = ContextBuilder.TaskStateMachine;
+        if (sm != null)
+        {
+            switch (sm.CurrentState)
+            {
+                case TaskState.Planning:
+                    Logger.Debug("规划门禁(状态机): Planning → 必须先调用 update_todo");
+                    return "update_todo";
+                case TaskState.Executing when string.IsNullOrEmpty(sm.ActiveSubtaskId):
+                    Logger.Debug("规划门禁(状态机): Executing 但无 ActiveSubtaskId → 必须先调用 start_subtask");
+                    return "start_subtask";
+                case TaskState.Complete:
+                    Logger.Debug("规划门禁(状态机): Complete → 无需强制工具");
+                    return null;
+                case TaskState.Executing:
+                    // 正在执行子任务，不需要强制规划工具
+                    return null;
+            }
+        }
+
+        // ★★★ 兜底：状态机未初始化或为空时的旧消息历史扫描逻辑 ★★★
         var hasUpdateTodo = ContextBuilder.RegisteredTools.Any(t => t.Name == "update_todo");
         var hasStartSubtask = ContextBuilder.RegisteredTools.Any(t => t.Name == "start_subtask");
         if (!hasUpdateTodo)
@@ -1642,7 +1783,7 @@ public class AiClient : IAiClient, IDisposable
         var hasToolResult = HasAnyToolEvidence(messages);
         if (!hasToolResult)
         {
-            Logger.Debug("规划门禁: 首轮必须先建立任务清单");
+            Logger.Debug("规划门禁(兜底): 首轮必须先建立任务清单");
             return "update_todo";
         }
 
@@ -1652,14 +1793,14 @@ public class AiClient : IAiClient, IDisposable
         var hasTodoCreated = HasToolEvidence(messages, "update_todo");
         if (!hasTodoCreated)
         {
-            Logger.Debug("规划门禁: 尚未建立任务清单，继续要求 update_todo");
+            Logger.Debug("规划门禁(兜底): 尚未建立任务清单，继续要求 update_todo");
             return "update_todo";
         }
 
         var hasSubtaskStarted = HasToolEvidence(messages, "start_subtask");
         if (!hasSubtaskStarted)
         {
-            Logger.Debug("规划门禁: 任务清单已建立，必须先开始第一个子任务");
+            Logger.Debug("规划门禁(兜底): 任务清单已建立，必须先开始第一个子任务");
             return "start_subtask";
         }
 
@@ -1855,7 +1996,7 @@ public class AiClient : IAiClient, IDisposable
                      !string.IsNullOrWhiteSpace(msg.Content) &&
                      msg.Content.Length > 20)
             {
-                var snippet = msg.Content.Length > 40 ? msg.Content[..40] + "…" : msg.Content;
+                var snippet = msg.Content.Length > 80 ? msg.Content[..80] + "…" : msg.Content;
                 summaryParts.Add($"  [{msg.ToolName}] {snippet}");
                 if (!string.IsNullOrWhiteSpace(msg.ToolName)) toolNames.Add(msg.ToolName);
             }
@@ -1942,6 +2083,106 @@ public class AiClient : IAiClient, IDisposable
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
     };
+
+    /// <summary>
+    /// 截断过大的工具结果，防止污染 LLM 上下文。
+    /// 对 browser_snapshot 等可能返回巨大 DOM 快照的工具特别重要。
+    /// </summary>
+    private static string TruncateToolResult(string toolName, string result)
+    {
+        if (result.Length <= MaxToolResultChars)
+            return result;
+
+        var head = result[..MaxToolResultChars];
+        var tailStart = result.Length - TruncateTailChars;
+        var tail = result[tailStart..];
+
+        var truncated = $"{head}\n\n...[已截断，原始内容 {result.Length} 字符，保留首 {MaxToolResultChars} + 尾 {TruncateTailChars} 字符]...\n\n{tail}";
+        Logger.Debug($"工具 {toolName} 结果截断: {result.Length} → {truncated.Length} 字符");
+        return truncated;
+    }
+
+    /// <summary>
+    /// 计算 AI 纯文本回复的指纹（用于复读检测）。
+    /// 仅取前 512 字符、移除空白、转为小写，生成简单哈希。
+    /// </summary>
+    private static string ComputeAiTextFingerprint(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return "empty";
+
+        var normalized = text.Trim();
+        if (normalized.Length > 512)
+            normalized = normalized[..512];
+
+        // 移除多余空白并转小写，使不同格式但内容相同的文本匹配
+        normalized = System.Text.RegularExpressions.Regex.Replace(normalized, @"\s+", "");
+        normalized = normalized.ToLowerInvariant();
+
+        // 简单快速哈希
+        int hash = 5381;
+        foreach (char c in normalized)
+        {
+            hash = ((hash << 5) + hash) ^ c;
+        }
+        return hash.ToString("x8");
+    }
+
+    /// <summary>
+    /// 检测工具结果是否为 {"data": "null"} 形式（JSON null 被序列化为了字符串 "null"）
+    /// 这种情况表示 JS 执行成功但结果为空/undefined，不是有效数据。
+    /// </summary>
+    private static bool IsJsonNullResult(string result)
+    {
+        if (string.IsNullOrWhiteSpace(result))
+            return false;
+
+        // 精确匹配: {"ok":true,"data":"null","error":null,"url":"...","ms":123}
+        if (result.Contains("\"data\":\"null\"") || result.Contains("\"data\": \"null\""))
+            return true;
+
+        // 也兼容 JSON 解析后的 null 值字符串形式
+        try
+        {
+            using var doc = JsonDocument.Parse(result);
+            var root = doc.RootElement;
+            if (root.TryGetProperty("data", out var dataEl) && dataEl.ValueKind == JsonValueKind.String)
+            {
+                var dataStr = dataEl.GetString() ?? "";
+                if (dataStr.Equals("null", StringComparison.Ordinal))
+                    return true;
+            }
+            if (root.TryGetProperty("ok", out var okEl) && okEl.ValueKind == JsonValueKind.True)
+            {
+                // {"ok":true,"data":null,...} — 真正的 JSON null
+                if (root.TryGetProperty("data", out var dataEl2) && dataEl2.ValueKind == JsonValueKind.Null)
+                    return true;
+            }
+        }
+        catch
+        {
+            // 非 JSON 结果不匹配
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// 递增 browser_js null 计数器：非 browser_js 调用时重置为 0。
+    /// 返回递增后的值。
+    /// </summary>
+    private int IncrementJsNullCount(string toolName)
+    {
+        if (toolName != "browser_js")
+        {
+            if (_consecutiveJsNullResults > 0)
+                Logger.Debug("browser_js null 计数器已重置（其他工具返回了结果）");
+            _consecutiveJsNullResults = 0;
+            return 0;
+        }
+
+        return ++_consecutiveJsNullResults;
+    }
 
     public void Dispose() => _http.Dispose();
 }

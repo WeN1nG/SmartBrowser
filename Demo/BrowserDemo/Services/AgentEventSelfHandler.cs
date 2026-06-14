@@ -20,6 +20,7 @@ internal sealed class AgentEventSelfHandler
     private int _noProgressCycles;
     private int _ignoredAskUserRecommendations;
     private int _deadEndScore;
+    private int _staleElementTerminations;
     private string? _terminateMessage;
 
     public ToolSelfHandlingDecision BeforeToolExecution(string toolName, Dictionary<string, object?>? args, IReadOnlyList<ChatMessage> messages)
@@ -34,6 +35,7 @@ internal sealed class AgentEventSelfHandler
                 $"已检测到继续复用过期 element_id={elementId}。instruction: 不要继续调用相同参数；先 observe_browser 获取最新 id，换元素或 ask_user。");
             if (reuseCount >= 2)
             {
+                _staleElementTerminations++;
                 _deadEndScore++;
                 return ToolSelfHandlingDecision.Block(
                     $"⛔ agent_self_handled: 已拦截重复使用过期 element_id={elementId}。请先调用 observe_browser 获取最新页面快照，使用新的 elements[*].id；如果没有可行动作，请调用 ask_user。");
@@ -118,6 +120,11 @@ internal sealed class AgentEventSelfHandler
 
     public bool ShouldTerminate(out string userFacingMessage)
     {
+        if (_staleElementTerminations >= 3)
+        {
+            _terminateMessage = $"⛔ AI 已连续 {_staleElementTerminations} 次尝试复用过期元素导致死胡同，系统已中止工具循环。页面结构可能已发生变化，请刷新页面后重新开始任务。";
+        }
+
         if (string.IsNullOrWhiteSpace(_terminateMessage) && _deadEndScore >= 4)
             _terminateMessage = "⚠️ AI 已触发多次无进展自处理事件，系统已中止工具循环以避免上下文继续膨胀。请换一种路线或提供用户指引。";
 

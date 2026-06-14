@@ -23,8 +23,8 @@ public static class AutomationScripts
     /// <summary>JS 内通过 dataset 访问的属性名（驼峰）</summary>
     public const string ElementIdDatasetKey = "bermainId";
 
-    /// <summary>快照最大元素数量。超出则截断并标记 truncated:true。</summary>
-    public const int MaxSnapshotElements = 1000;
+    /// <summary>快照最大元素数量。超出则截断并标记 truncated:true；0 表示无上限。</summary>
+    public const int MaxSnapshotElements = 0;
 
     /// <summary>
     /// 注入到页面的完整 API。
@@ -52,13 +52,84 @@ public static class AutomationScripts
             var ATTR_KEY = '{{ElementIdDatasetKey}}';
             var MAX = {{MaxSnapshotElements}};
 
+            // ★ Playwright 风格可见性过滤：只保留真正"看得见且能交互"的元素 ★
+            // 对齐 Playwright isElementHiddenForAria() + receivesPointerEvent()
+            function isElementHiddenForAria(el) {
+                if (el.tagName === 'SCRIPT' || el.tagName === 'STYLE' || el.tagName === 'NOSCRIPT') return true;
+                if (el.matches('[hidden], [aria-hidden="true"]')) return true;
+                var role = (el.getAttribute('role') || '').toLowerCase();
+                if (role === 'presentation' || role === 'none') return true;
+                var node = el;
+                while (node && node !== document.documentElement) {
+                    var style = getComputedStyle(node);
+                    if (!style || style.display === 'none' || style.visibility === 'hidden') return true;
+                    var ariaVis = style.getPropertyValue('aria-visibility');
+                    if (ariaVis === 'hidden') return true;
+                    node = node.parentElement;
+                }
+                return false;
+            }
+
+            function receivesPointerEvent(el) {
+                var rect = el.getBoundingClientRect();
+                return rect.width > 0 && rect.height > 0;
+            }
+
+            // ★ 元素重要性评分：让按钮 / CTA 等关键元素排在前面 ★
+            function scoreElement(el) {
+                var tag = (el.tagName || '').toLowerCase();
+                var role = (el.getAttribute('role') || '').toLowerCase();
+                var text = ((el.textContent || '') + '').trim();
+                var aria = (el.getAttribute('aria-label') || '').trim();
+                var name = (el.getAttribute('name') || '').trim();
+                var label = text || aria || name;
+                var score = 0;
+
+                var tagPriority = {
+                    'button': 100, 'menuitem': 95, 'switch': 90, 'tab': 85,
+                    'a': 80, 'checkbox': 75, 'radio': 70,
+                    'input': 65, 'select': 60, 'textarea': 55,
+                    'details': 50, 'summary': 45, 'label': 20, 'datalist': 30,
+                    'option': 25, 'combobox': 55
+                };
+                score += (tagPriority[tag] || tagPriority['role_' + role] || 10);
+
+                // 按钮文本越短优先级越高（CTA 按钮比导航链接更重要）
+                if (tag === 'button' || role === 'button') {
+                    var len = label.length;
+                    if (len > 0 && len < 20) score += 50;
+                    else if (len < 50) score += 30;
+                }
+
+                // aria-label 加分
+                if (aria && aria.length > 0) score += 20;
+
+                // 有 href 的链接优先级降低（导航噪声）
+                if (tag === 'a' && el.getAttribute('href')) {
+                    score -= 10;
+                    var href = (el.getAttribute('href') || '');
+                    if (href === '#' || href.startsWith('javascript:') ||
+                        href.startsWith('tel:') || href.startsWith('mailto:')) {
+                        score -= 30; // 纯 JS 链接 / 空链接 / 电话链接进一步降低
+                    }
+                }
+
+                // 纯展示元素降低（没有有意义的文本信息）
+                if (!label && !aria && !name) score -= 20;
+
+                return score;
+            }
+
             // ★ 递归收集可交互元素（穿透 open Shadow DOM 与同源 iframe）★
             function collectInteractive(root, out) {
                 try {
                     var nodes = root.querySelectorAll(INTERACTIVE_SELECTOR);
                     for (var i = 0; i < nodes.length; i++) {
+                        // Playwright 风格可见性 + 交互性过滤
+                        if (isElementHiddenForAria(nodes[i])) continue;
+                        if (!receivesPointerEvent(nodes[i])) continue;
                         out.push(nodes[i]);
-                        if (out.length >= MAX) return;
+                        if (MAX > 0 && out.length >= MAX) return;
                     }
                     // open Shadow DOM 穿透
                     var hostCandidates = root.querySelectorAll('*');
@@ -66,7 +137,7 @@ public static class AutomationScripts
                         var sr = hostCandidates[j].shadowRoot;
                         if (sr) {
                             collectInteractive(sr, out);
-                            if (out.length >= MAX) return;
+                            if (MAX > 0 && out.length >= MAX) return;
                         }
                     }
                     // 同源 iframe 穿透
@@ -76,7 +147,7 @@ public static class AutomationScripts
                             var doc = iframes[k].contentDocument;
                             if (doc) {
                                 collectInteractive(doc, out);
-                                if (out.length >= MAX) return;
+                                if (MAX > 0 && out.length >= MAX) return;
                             }
                         } catch (e) { /* 跨域 iframe 不可访问 */ }
                     }
@@ -115,15 +186,11 @@ public static class AutomationScripts
                 return path.join(' > ');
             }
 
-            // ★ 收集元素信息 ★
+            // ★ 收集元素信息 — 精简字段，避免污染 LLM 上下文 ★
+            // 保留：id/tag/text/type/name/aria_label/placeholder/value/href（AI 识别+操作必需）
+            // 移除：css_selector（已禁用 CSS 定位）、rect/visible（不依赖坐标）、
+            //       checked/disabled/readonly（AI 不会操作不可用元素，冗余）
             function collectElementInfo(el, index) {
-                var rect = { x: 0, y: 0, w: 0, h: 0 };
-                try {
-                    var r = el.getBoundingClientRect();
-                    rect = { x: Math.round(r.x), y: Math.round(r.y),
-                             w: Math.round(r.width), h: Math.round(r.height) };
-                } catch (e) {}
-
                 var tag = (el.tagName || '').toLowerCase();
                 var isInput = tag === 'input' || tag === 'textarea' || tag === 'select';
                 var t = el.type || null;
@@ -131,21 +198,14 @@ public static class AutomationScripts
                 return {
                     id: index,
                     tag: tag,
-                    text: ((el.textContent || '') + '').trim().substring(0, 200),
+                    text: ((el.textContent || '') + '').trim().substring(0, 100),
                     role: el.getAttribute ? (el.getAttribute('role') || null) : null,
                     type: t,
                     name: el.getAttribute ? (el.getAttribute('name') || null) : null,
                     href: el.getAttribute ? (el.getAttribute('href') || null) : null,
                     aria_label: el.getAttribute ? (el.getAttribute('aria-label') || null) : null,
                     placeholder: el.getAttribute ? (el.getAttribute('placeholder') || null) : null,
-                    value: isInput && el.value != null ? (el.value + '').substring(0, 100) : null,
-                    checked: (t === 'checkbox' || t === 'radio') ? !!el.checked : null,
-                    disabled: !!el.disabled,
-                    readonly: !!el.readOnly,
-                    rect: rect,
-                    visible: rect.w > 0 && rect.h > 0 && (el.offsetParent !== null
-                              || (el.getClientRects && el.getClientRects().length > 0)),
-                    css_selector: generateCssSelector(el)
+                    value: isInput && el.value != null ? (el.value + '').substring(0, 50) : null
                 };
             }
 
@@ -187,7 +247,11 @@ public static class AutomationScripts
                 getSnapshot: function() {
                     var elements = [];
                     collectInteractive(document, elements);
-                    var truncated = elements.length >= MAX;
+                    // 重要性排序：按钮 / CTA 等关键元素优先
+                    elements.sort(function(a, b) {
+                        return scoreElement(b) - scoreElement(a);
+                    });
+                    var truncated = MAX > 0 && elements.length >= MAX;
                     assignIds(elements);
                     var info = [];
                     for (var i = 0; i < elements.length; i++) {

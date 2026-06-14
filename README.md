@@ -6,7 +6,7 @@
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
 </p>
 
-**SmartAI Browser Demo** 是一个 Windows 智能浏览器原型，将 **WebView2 浏览器引擎** 与 **AI 函数调用（Function Calling）** 深度整合。AI 助手能够自主阅读页面结构、执行点击输入、导航切换、完成表单等操作，同时用户可通过 `ask_user` 机制在关键节点介入确认，实现"AI 自动执行 + 人工适时干预"的协作模式。
+**SmartAI Browser Demo** 是一个 Windows 智能浏览器原型，将 **WebView2 浏览器引擎** 与 **AI 函数调用（Function Calling）** 深度整合。AI 助手能够自主阅读页面结构、执行点击输入、导航切换、完成表单等操作，同时通过**任务状态机**强制 AI 按子任务清单顺序执行，并通过 `ask_user` 机制在关键节点让人工介入确认，实现"AI 自动执行 + 人工适时干预 + 强制任务规划"的协作模式。
 
 > **联系 & 反馈**：欢迎通过邮箱 [3266038380@qq.com](mailto:3266038380@qq.com) 提出意见、建议或报告问题。如果你有类似项目或想一起完善这个 Demo，非常期待与你交流！
 
@@ -35,8 +35,12 @@
 | 思考过程 / 结论分区 | AI 输出自动拆分为可折叠思考区与可见结论区 |
 | `ask_user` 人工确认 | AI 遇到歧义时暂停，用户选择后恢复执行 |
 | AI 任务清单 | 复杂任务自动拆分子任务，右侧面板实时跟踪进度 |
-| 上下文自动压缩 | 对话超 150KB 自动压缩至 ~100KB，防止上下文溢出 |
+| 上下文自动压缩 | 对话超 50KB 自动压缩至 ~40KB，子任务完成时压缩至 ~30KB |
 | 会话持久化 | 自动保存对话 JSON，支持加载历史对话 |
+| **任务状态机** | 强制 AI 按 Planning → Executing → Complete 顺序执行子任务，不可跳序 |
+| **死胡同自检测** | 自动检测过期元素复用、重复导航失败、无进展循环，注入纠正提示或终止工具循环 |
+| **AI 复读检测** | 连续多轮返回高度相似文本时自动终止，防止 AI 原地打转 |
+| **硬迭代上限** | 工具循环最多 80 轮，超出强制终止 |
 
 ### AI 可调用的浏览器工具（17 个）
 
@@ -44,7 +48,7 @@
 |------|------|
 | `browser_navigate` | 打开指定 URL |
 | `browser_back` / `browser_forward` / `browser_reload` | 后退 / 前进 / 刷新 |
-| `browser_snapshot` | 获取页面可访问性快照（结构化元素列表 + `element_id`） |
+| `browser_snapshot` | 获取页面可交互元素快照（Playwright 风格可见性过滤 + 重要性评分） |
 | `browser_click` | 通过 `element_id` 点击元素 |
 | `browser_type` | 通过 `element_id` 向输入框键入文本 |
 | `browser_hover` | 悬停触发下拉/tooltip |
@@ -58,6 +62,15 @@
 | `browser_switch_tab` | 切换标签页 |
 | `observe_browser` | 一次性快照 → 返回 `<browser_state>` 结构化文本 |
 
+### 任务规划工具
+
+| 工具 | 功能 |
+|------|------|
+| `update_todo` | 创建完整子任务清单（仅 Planning 状态允许） |
+| `start_subtask` | 开始执行某个子任务，触发上下文压缩 |
+| `finish_subtask` | 结束当前子任务（completed/blocked），自动推进下一个 |
+| `set_task_iterations` | 动态调整迭代次数软提醒阈值（1-80） |
+
 ---
 
 ## 技术栈
@@ -70,6 +83,8 @@
 | 浏览器内核 | Microsoft Edge WebView2 (`Microsoft.Web.WebView2`) |
 | AI 协议 | OpenAI-compatible SSE / Anthropic-native Messages SSE |
 | 浏览器自动化 | WebView2 CoreWebView2 API + JavaScript 注入 |
+| 任务管理 | 自建 TaskStateMachine（Planning → Executing → Complete） |
+| 自检测机制 | AgentEventSelfHandler（死胡同检测 + 自动阻断） |
 | 日志 | 自研 Logger（控制台 + 文件 + 内存缓存 + TraceBlock） |
 | 数据持久化 | JSON 文件（书签 / 历史 / 会话 / 模型配置） |
 
@@ -127,7 +142,7 @@ Demo/BrowserDemo/
 │   ├── AiTodoItem.cs                    # AI 任务列表 UI 模型
 │   └── DownloadItem.cs                  # 下载项 UI 模型
 ├── ViewModels/
-│   └── ChatViewModel.cs                 # AI 聊天、工具循环、ask_user 暂停恢复、任务清单
+│   └── ChatViewModel.cs                 # AI 聊天、工具循环、ask_user、任务状态机集成
 ├── Views/
 │   ├── AiChatPanel.xaml / .cs           # AI 聊天面板（UserControl）
 │   ├── AiSecondaryWindow.xaml / .cs     # 独立 AI 浮窗
@@ -135,17 +150,18 @@ Demo/BrowserDemo/
 │   └── DownloadsWindow.xaml / .cs       # 下载记录窗口
 ├── Services/
 │   ├── Logger.cs                        # 日志服务：控制台 + 文件 + 内存缓存
-│   ├── AiClient.cs                      # OpenAI/Anthropic 流式 SSE 客户端
+│   ├── AiClient.cs                      # OpenAI/Anthropic 流式 SSE 客户端 + 工具循环安全机制
 │   ├── ContextBuilder.cs                # 系统提示词 + 动态上下文 + 工具 Schema 聚合
 │   ├── ConversationService.cs           # 会话 JSON 持久化
 │   ├── DownloadManager.cs               # 下载列表管理（静态 Observable）
+│   ├── AgentEventSelfHandler.cs         # AI 工具循环自检测：死胡同识别 + 自动阻断
 │   ├── BrowserHost/
 │   │   ├── BrowserHostService.cs        # ★ 当前活跃的 WebView2 浏览器宿主
 │   │   └── ChromeProcessManager.cs      # 旧外部 Chrome/CDP 宿主（默认不启用）
 │   ├── Automation/
 │   │   ├── BrowserAutomationService.cs      # ★ 当前活跃的浏览器自动化核心
 │   │   ├── BrowserAutomationToolRouter.cs   # ★ browser_* AI 工具路由
-│   │   ├── AutomationScripts.cs             # 页面快照/点击/输入等 JS 片段
+│   │   ├── AutomationScripts.cs             # ★ 页面快照 JS：Playwright 风格过滤 + 重要性评分
 │   │   ├── AdbService.cs                    # Android SMS 助手（未暴露为 AI 工具）
 │   │   └── WebView2AutomationBridge.cs      # ❌ 已 #if false 禁用，死代码
 │   ├── Mcp/                             # 旧 MCP JSON-RPC / Playwright MCP 客户端
@@ -188,10 +204,11 @@ MainWindow.OnLoaded（核心初始化）
       ├─ 注册 observe_browser（一次性结构化快照）
       ├─ 注册 ask_user（暂停/恢复人工确认）
       ├─ 注册 set_task_iterations（调整工具循环阈值）
-      ├─ 注册 update_todo（AI 任务清单）
-      └─ 注册 start_subtask / finish_subtask（子任务边界 + 上下文压缩触发）
+      ├─ 注册 update_todo（→ 连接 TaskStateMachine）
+      ├─ 注册 start_subtask / finish_subtask（→ 连接 TaskStateMachine）
+      └─ ContextBuilder.TaskStateMachine = _taskStateMachine
   ↓
-✅ 浏览器嵌入完成，AI 工具已就绪
+✅ 浏览器嵌入完成，AI 工具已就绪，任务状态机已激活
 ```
 
 **重要**：当前默认启动路径 **不** 启用 Playwright MCP / 外部 Chrome CDP。这些旧路径代码保留在仓库中，除非手动调用 `ChatViewModel.SetChromeCdpEndpoint(...)` 才会激活。
@@ -209,6 +226,7 @@ MainWindow.OnLoaded（核心初始化）
 - 通过 Visibility 切换实现标签页切换（避免重复创建/销毁）
 - 处理导航、标题、URL、加载状态、下载、新窗口、进程崩溃等事件
 - 将网页 popup / new window 请求转换为应用内新标签页
+- 通过 `Automation` 属性链接到 `BrowserAutomationService`
 
 ### BrowserAutomationService — 浏览器自动化
 
@@ -219,6 +237,19 @@ AI 调用浏览器操作的底层执行层：
 - 通过 WebView2 API 和注入 JavaScript 完成全部操作
 - 始终面向当前激活标签页执行
 
+### AutomationScripts — 页面快照 JS 引擎
+
+注入到页面的 JavaScript 代码，负责采集可交互元素：
+
+- **Playwright 风格可见性过滤**：只保留真正"看得见且能交互"的元素
+  - 过滤 `display:none`、`visibility:hidden`、`aria-hidden`、`[hidden]`、`role=presentation`
+  - 通过 `getBoundingClientRect()` 验证元素具有非零尺寸
+- **元素重要性评分**：按钮 / CTA 等关键元素优先出现在快照前列
+  - 按标签优先级（button=100, a=80, input=65 …）打分
+  - 短文本按钮加分，空标签降权，纯 JS 链接大幅降权
+- **精简字段**：移除 rect/visible/css_selector/disabled/readonly，减少 LLM 上下文污染
+- **无上限采集**：不再限制元素数量（`MaxSnapshotElements = 0`），依靠重要性排序和上下文压缩控制大小
+
 ### BrowserAutomationToolRouter — AI 工具路由
 
 将 AI 的 function calling 参数转换为浏览器自动化调用：
@@ -227,6 +258,27 @@ AI 调用浏览器操作的底层执行层：
 - 返回紧凑 JSON 格式结果，避免将大体积数据（如 base64 截图）注入 AI 上下文
 - 页面元素操作统一使用 `browser_snapshot` 返回的整数 `element_id`
 
+### AgentEventSelfHandler — AI 自检测
+
+在工具循环中实时监控 AI 行为，自动识别死胡同：
+
+- **过期元素复用检测**：追踪已知无效的 element_id，重复 2 次后阻断，累计 3 次终止循环
+- **重复导航失败**：同一 URL 失败 2 次或同主机失败 4 次后阻断
+- **无进展循环**：被动工具（observe/snapshot/wait/reload）连续产生相同结果时注入警告
+- **相同动作重复**：同一工具+参数产生相同结果 3 次后阻断
+- **ask_user 建议追踪**：工具结果多次建议 ask_user 但未采纳时终止
+- 所有检测通过注入 `[agent_event code=xxx severity=warning|block]` 系统消息通知 AI
+
+### TaskStateMachine — 任务状态机
+
+强制 AI 按子任务清单顺序执行，防止跳跃式操作：
+
+- **三态流转**：`Planning` → `Executing` → `Complete`
+- **update_todo**：仅在 Planning 状态允许，建立完整子任务清单
+- **start_subtask**：仅可对当前 `ActiveSubtaskId` 调用，触发上下文压缩
+- **finish_subtask**：仅可对当前 `ActiveSubtaskId` 调用，完成后自动推进下一个 pending 子任务
+- **压缩策略**：start 时 Standard 压缩，finish(completed) 时 Max 压缩，finish(blocked) 时不压缩
+
 ### ChatViewModel & AiClient — AI 聊天与工具循环
 
 **AiClient** 支持两类协议：
@@ -234,12 +286,18 @@ AI 调用浏览器操作的底层执行层：
 1. **OpenAI-compatible**：`chat/completions` 流式接口，Bearer 认证
 2. **Anthropic-native**：`messages` 流式接口，`x-api-key` + `anthropic-version`
 
-**工具循环** (`ExecuteConversationAsync`)：
+**工具循环安全机制** (`ExecuteConversationAsync`)：
 
-- 意图为无界 `for` 循环：AI 持续返回工具调用 → 执行 → 结果回传 → 继续
-- `set_task_iterations` 设置软提醒阈值（1-80），接近阈值时注入效率提示
-- 上下文自动压缩：超过 150KB 压缩至 ~100KB，40 轮 / 40 消息兜底
-- `ask_user` 触发暂停，等待用户输入后恢复
+- **意图为无界 `for` 循环**：AI 持续返回工具调用 → 执行 → 结果回传 → 继续
+- **硬上限**：最多 80 轮迭代，超出强制终止
+- **工具结果截断**：超过 2000 字符自动截断（保留首 2000 + 尾 500）
+- **上下文压缩**：50KB 触发压缩至 40KB，子任务完成时压缩至 30KB
+- **子任务门禁**：有未完成子任务时 AI 输出纯文本 → 回传提醒；连续 5 次不执行工具 → 终止
+- **规划门禁**：基于 TaskStateMachine 状态强制要求 `update_todo` / `start_subtask`
+- **AI 复读检测**：连续 2 轮返回指纹相同的文本（>30 字符）→ 终止
+- **browser_js null 诊断**：连续 2 次 JS 查询返回 null → 注入策略变更提示
+- **set_task_iterations**：设置软提醒阈值（1-80），接近阈值时注入效率提示
+- **上下文压缩**：40 轮 / 40 消息兜底
 
 ### ask_user 暂停/恢复机制
 
@@ -288,7 +346,7 @@ AI 调用 ask_user(question, options?)
 
 ### 浏览器元素 ID 无效或过期
 
-重新调用 `browser_snapshot` 或 `observe_browser`，使用最新快照中的整数 `element_id`。
+重新调用 `browser_snapshot` 或 `observe_browser`，使用最新快照中的整数 `element_id`。如果 AI 连续复用过期元素，`AgentEventSelfHandler` 会自动阻断并终止循环。
 
 ### WebView2 操作卡住
 
@@ -297,6 +355,15 @@ AI 调用 ask_user(question, options?)
 ### AI 流式输出导致 UI 卡顿
 
 检查 `ChatViewModel` 中的 UI 刷新节流和 Markdown 转换逻辑。长回复（>12000 字符）仅渲染末尾部分。
+
+### AI 工具循环被终止
+
+查看日志中的 `agent_event` 记录，确定触发原因：
+- `stale_element_reuse` → 元素过期，刷新页面后重试
+- `repeated_navigation_failure` → URL 错误，从页面入口进入或 ask_user
+- `repeat_same_action` → 动作重复，换策略
+- `no_progress_observe_wait_loop` → 观察无进展，点击明确入口
+- `js_null_hint` → JS 查询连续返回空，换查询逻辑
 
 ### 看到 MCP 日志但功能无关
 
@@ -325,6 +392,8 @@ MCP / Playwright / 外部 Chrome 是旧路径。当前默认浏览器控制来�
 | AI 工具 | `BrowserAutomationToolRouter.cs` |
 | 聊天与工具循环 | `ChatViewModel.cs`、`AiClient.cs` |
 | 系统提示词 | `ContextBuilder.cs` |
+| 自检测机制 | `AgentEventSelfHandler.cs` |
+| 任务状态机 | `TaskStateMachine.cs` |
 | UI 界面 | `Views/` 下的 XAML 文件 |
 
 ---

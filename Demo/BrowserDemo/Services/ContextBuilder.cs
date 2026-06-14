@@ -87,11 +87,15 @@ public class ContextBuilder
     public bool HasAnyRuntimeToolEvidence()
         => _runtimeToolEvidence.Count > 0;
 
+    /// <summary>关联的任务状态机（可选，设为 null 时回退到旧的软门禁模式）</summary>
+    public TaskStateMachine? TaskStateMachine { get; set; }
+
     public void ClearRuntimeState()
     {
         _runtimeToolEvidence.Clear();
         RuntimeHasTodoItems = false;
         RuntimeActiveSubtaskId = null;
+        TaskStateMachine?.Reset();
     }
 
     // ====================================================================
@@ -271,6 +275,14 @@ public class ContextBuilder
         sb.AppendLine("  子任务5: 确认全部通过 ✓");
         sb.AppendLine("  子任务6: 汇报总结 ✓");
         sb.AppendLine();
+        sb.AppendLine("### 2.1 强制顺序执行（必须遵守）");
+        sb.AppendLine("- 系统会强制按列表顺序执行子任务，跳过或乱序将导致操作被拒绝");
+        sb.AppendLine("- 每个子任务必须先 `start_subtask` 标记进行中，再执行浏览器操作");
+        sb.AppendLine("- 每个子任务必须用 `finish_subtask` 结束，然后才能开始下一个子任务");
+        sb.AppendLine("- 不允许跳过子任务 N 直接执行 N+1");
+        sb.AppendLine("- 执行中不允许新建任务清单（`update_todo` 会被系统拒绝）");
+        sb.AppendLine("- 子任务内连续失败：先重试 1 次 → 换思路 2 次 → 仍失败则 `finish_subtask(status=\"blocked\")`");
+        sb.AppendLine();
         sb.AppendLine("### 2. 子任务执行规则");
         sb.AppendLine("- **执行前** → 调用 `start_subtask`，让系统压缩此前上下文并把当前子任务标为进行中");
         sb.AppendLine("- **成功** → 调用 `finish_subtask(status=\"completed\")`，系统会立刻更新清单并把下一子任务标为进行中");
@@ -308,6 +320,11 @@ public class ContextBuilder
         sb.AppendLine("- **及时总结**：提取到足够信息后立即给出答案，不发起多余工具调用");
         sb.AppendLine("- **卡住就换路**：连续 3 次空结果说明方法行不通，换路线而非换参数");
         sb.AppendLine("- **大胆求助**：尝试多种方法后仍无法推进，立即 `ask_user`");
+        sb.AppendLine();
+        sb.AppendLine("### 4.1 禁止滥用 ask_user");
+        sb.AppendLine("- **已有信息必须直接使用**：如果用户已经在对话中提供了关键信息（如手机号、用户名、目标URL等），你必须立即使用 `browser_type`/`browser_fill_form` 等工具填入表单或执行操作，**不得再次询问**。");
+        sb.AppendLine("- **可并行决策时自行选择**：如果存在多个可行路径（如多种登录方式），选择最直接的一条执行，不要把选择题抛给用户。");
+        sb.AppendLine("- **ask_user 是最后手段**：只有在确实缺少必要信息且无法通过其他工具获取时，才使用 ask_user。常规页面操作、表单填写、信息提取等场景不得使用。");
         sb.AppendLine();
         sb.AppendLine("### 5. 安全意识");
         sb.AppendLine("执行可能影响系统或数据的操作前，先征求用户确认。");
@@ -428,7 +445,7 @@ public class ContextBuilder
             sb.AppendLine("当任务需要这些能力时，主动选择合适的工具并调用。");
             sb.AppendLine("工具调用结果会反馈给你，基于结果继续完成任务。");
             if (RegisteredTools.Any(t => t.Name == "update_todo"))
-                sb.AppendLine("复杂任务必须先调用 `update_todo` 一次性建立完整子任务清单；后续只更新既有清单状态，并在每个子任务开始/结束时用 `start_subtask` / `finish_subtask` 更新状态。");
+                sb.AppendLine("复杂任务必须先调用 `update_todo` 一次性建立完整子任务清单；后续只更新既有清单状态。系统强制按顺序执行：`update_todo` → `start_subtask` → 操作 → `finish_subtask` → 下一子任务，不可跳序。");
             if (compositeTools.Count > 0)
                 sb.AppendLine("对于组合技能（compose_ 开头），一次调用即可完成多步操作。");
             sb.AppendLine();

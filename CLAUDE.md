@@ -4,14 +4,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with th
 
 ## Project Overview
 
-**SmartAI Browser Demo** is a Windows intelligent browser prototype built with **C# / .NET 8 / WPF**. The current Demo runs an embedded **WebView2** browser host and exposes browser-control tools to the AI assistant **Bermain（板儿面）** through hand-written function calling schemas.
+**SmartAI Browser Demo** is a Windows intelligent browser prototype built with **C# / .NET 8 / WPF**. The app runs an embedded **WebView2** browser host and exposes browser-control tools to the AI assistant **Bermain（板儿面）** through hand-written function calling schemas. A task state machine forces the AI to break complex tasks into ordered subtasks and execute them sequentially.
 
 The important current reality is:
 
 - The active browser host is `BrowserHostService` + WebView2 controls embedded directly in the WPF window.
 - The active AI browser automation path is `BrowserAutomationService` + `BrowserAutomationToolRouter`.
+- A **TaskStateMachine** enforces a Planning → Executing → Complete lifecycle for subtask-based task execution.
+- An **AgentEventSelfHandler** performs autonomous dead-end detection: stale element reuse, repeated navigation failures, no-progress loops, and repeated same-action blocking.
 - The older Playwright MCP / external Chrome CDP path still exists in code (`SkillSystemIntegration`, `PlaywrightMcpClient`, `ChromeProcessManager`) but is not used by the current startup flow because `MainWindow.OnLoaded` no longer calls `ChatViewModel.SetChromeCdpEndpoint`.
 - `WebView2AutomationBridge.cs` is fully disabled with `#if false` and must be treated as dead code.
+- `AiClient.ExecuteConversationAsync` has multiple anti-loop mechanisms: hard iteration cap (80), subtask gate, planning gate, AI repetition detection, stale result detector, and context compression.
 
 ## Build, Run, and Verification
 
@@ -58,7 +61,7 @@ Demo/BrowserDemo/
 │   └── SkillDefinition*.cs / SkillStep.cs / SkillExecutionResult.cs
 │       # Legacy record-based skill model; not the active skill system
 ├── ViewModels/
-│   └── ChatViewModel.cs                # AI chat, function-call loop integration, ask_user pause/resume, tool registration
+│   └── ChatViewModel.cs                # AI chat, tool loop, ask_user, task state machine integration
 ├── Views/
 │   ├── AiChatPanel.xaml / .cs          # Chat panel UI
 │   ├── AiSecondaryWindow.xaml / .cs    # Floating AI window owned by MainWindow
@@ -68,16 +71,19 @@ Demo/BrowserDemo/
 ├── Services/
 │   ├── Logger.cs                       # Static logger: console + file + in-memory buffer + Trace blocks
 │   ├── IAiClient.cs / AiClient.cs       # Hand-written OpenAI-compatible + Anthropic SSE clients and tool loop
-│   ├── ContextBuilder.cs               # System prompt + dynamic context + registered tool schemas
+│   ├── ContextBuilder.cs               # System prompt + dynamic context + tool schemas + TaskStateMachine link
 │   ├── ConversationService.cs          # JSON conversation persistence
 │   ├── DownloadManager.cs              # Static observable download list
+│   ├── AgentEventSelfHandler.cs        # Autonomous dead-end detection and self-correction during tool loops
 │   ├── BrowserHost/
 │   │   ├── BrowserHostService.cs       # ACTIVE browser host: WebView2 environment, tabs, events, downloads
+│   │   │   └─ Automation property       # Links to BrowserAutomationService
 │   │   └── ChromeProcessManager.cs     # Legacy external Chromium/CDP host; not used by MainWindow current flow
 │   ├── Automation/
 │   │   ├── BrowserAutomationService.cs # ACTIVE automation: WebView2 API + JS injection + UI-thread dispatch
 │   │   ├── BrowserAutomationToolRouter.cs # ACTIVE function-call router for browser_* tools
 │   │   ├── AutomationScripts.cs        # JavaScript snippets for snapshots/click/type/etc.
+│   │   │   └─ Playwright-style snapshot  # Visibility filtering, importance scoring, simplified element fields
 │   │   ├── AdbService.cs               # Android SMS helper; not exposed as an AI tool
 │   │   └── WebView2AutomationBridge.cs # Disabled with #if false; dead code
 │   ├── Mcp/
@@ -108,9 +114,12 @@ Tools/
 | UI framework | Hand-written WPF dark UI; no DI container |
 | Browser rendering | Embedded WebView2 controls managed by `BrowserHostService` |
 | Browser profile | `%LocalAppData%/SmartAI-Browser-Demo/webview2-profile/` |
-| Active automation | `BrowserAutomationService` runs WebView2 operations on the UI dispatcher and serializes operations with `SemaphoreSlim(1,1)` |
+| Active automation | `BrowserAutomationService` runs WebView2 operations on the UI dispatcher, serialized with `SemaphoreSlim(1,1)` |
 | AI tool exposure | `BrowserAutomationToolRouter.GetToolDefinitions()` registers `browser_*` tools into `ContextBuilder` |
 | AI client | Hand-written `HttpClient` streaming SSE for OpenAI-compatible and Anthropic-native APIs |
+| Task state machine | `TaskStateMachine` (Planning → Executing → Complete) forces ordered subtask execution |
+| Agent self-handling | `AgentEventSelfHandler` detects dead-ends: stale elements, repeated failures, no-progress loops |
+| AI client safety | Hard iteration cap (80), context compression triggers at 50KB, tool result truncation at 2000 chars, AI repetition detection |
 | Providers | `ProviderManager` registers OpenAI, Anthropic, Google, DeepSeek, xAI, Groq, Cerebras, Mistral, Together, Fireworks, OpenRouter, Alibaba, Zhipu, Moonshot, SiliconFlow, Ollama, DeepInfra |
 | Settings storage | `ai_settings.json` next to the executable (`AppDomain.CurrentDomain.BaseDirectory`) with multi-profile support via `AiSettingsStore` |
 | Conversations | JSON files under `%LocalAppData%/SmartAI-Browser-Demo/conversations/` |
@@ -146,9 +155,10 @@ MainWindow.OnLoaded
   │   ├─ registers observe_browser
   │   ├─ registers ask_user
   │   ├─ registers set_task_iterations
-  │   ├─ registers update_todo
-  │   └─ registers start_subtask / finish_subtask
-  └─ status: browser embedded, AI browser tools enabled
+  │   ├─ registers update_todo (linked to TaskStateMachine)
+  │   ├─ registers start_subtask / finish_subtask (linked to TaskStateMachine)
+  │   └─ ContextBuilder.TaskStateMachine = ChatViewModel._taskStateMachine
+  └─ status: browser embedded, AI browser tools enabled, state machine active
 ```
 
 `MainWindow.OnLoaded` explicitly does **not** call `_vm.Chat.SetChromeCdpEndpoint(...)` in the current implementation. Do not describe external Chrome + Playwright MCP as the active path unless you are intentionally documenting legacy code.
@@ -162,28 +172,30 @@ MainWindow.OnLoaded
 - Creates one shared `CoreWebView2Environment`.
 - Creates one `WebView2` control per `TabInfo.Id` and adds it to the WPF `ContentArea` panel.
 - Switches active tabs by toggling each WebView2 control's `Visibility`.
-- Binds WebView2 events:
-  - `NavigationStarting`
-  - `NavigationCompleted`
-  - `DocumentTitleChanged`
-  - `SourceChanged`
-  - `DownloadStarting`
-  - `NewWindowRequested`
-  - `ProcessFailed`
-  - script dialog handling
+- Binds WebView2 events: `NavigationStarting`, `NavigationCompleted`, `DocumentTitleChanged`, `SourceChanged`, `DownloadStarting`, `NewWindowRequested`, `ProcessFailed`, script dialog handling.
 - Converts popup/new-window requests into app tabs via `NewTabRequested`.
 - Records download progress through `DownloadManager`.
+- Exposes an `Automation` property that links to `BrowserAutomationService`.
 
 ### BrowserAutomationService
 
 `Services/Automation/BrowserAutomationService.cs` is the active automation layer:
 
-- It is called from the AI/tool loop on background threads.
-- It switches to the WPF UI thread using `Dispatcher.InvokeAsync` before touching WebView2.
-- It serializes automation calls with a single `SemaphoreSlim` to avoid concurrent page operations.
-- It targets the current active tab (`SwitchToTab(Guid)` updates active automation target).
-- It exposes operations such as navigation, back/forward/reload, click/type/hover/select, scroll, key press, screenshot, JS evaluation, wait, wait-for-text, and form filling.
-- Element tools use integer `element_id` values returned by `browser_snapshot`; do not use CSS selectors for the active `browser_click` / `browser_type` path unless a tool explicitly accepts them.
+- Called from the AI/tool loop on background threads; switches to WPF UI thread via `Dispatcher.InvokeAsync`.
+- Serializes operations with `SemaphoreSlim(1,1)`.
+- Targets the current active tab (`SwitchToTab(Guid)`).
+- Exposes: navigation, back/forward/reload, click/type/hover/select, scroll, key press, screenshot, JS evaluation, wait, wait-for-text, form filling.
+- Element tools use integer `element_id` from `browser_snapshot`.
+
+### AutomationScripts — JavaScript Snapshot Engine
+
+`Services/Automation/AutomationScripts.cs` contains the JS injected into pages for accessibility snapshots:
+
+- **Playwright-style visibility filtering**: Only elements that are truly visible and receive pointer events are included. Filters by `display:none`, `visibility:hidden`, `aria-hidden`, `[hidden]`, `role=presentation`.
+- **Importance scoring**: Interactive elements are scored by tag priority (button > a > input …), label length, aria-label presence, href type. Key elements (CTAs, buttons) appear first.
+- **Simplified element fields**: Removed rect/visible/css_selector/disabled/readonly from snapshot output to reduce context pollution. Retains: id, tag, text, role, type, name, href, aria_label, placeholder, value.
+- **Text field shortened**: text field limited to 100 chars (from 200), value to 50 chars (from 100).
+- **No element limit**: `MaxSnapshotElements` changed from 1000 to 0 (unlimited), relying on importance scoring and context compression instead.
 
 ### BrowserAutomationToolRouter
 
@@ -191,64 +203,83 @@ MainWindow.OnLoaded
 
 Currently registered browser tools:
 
-- `browser_navigate`
-- `browser_back`
-- `browser_forward`
-- `browser_reload`
-- `browser_snapshot`
-- `browser_click`
-- `browser_type`
-- `browser_hover`
-- `browser_select_option`
-- `browser_scroll`
-- `browser_press_key`
-- `browser_screenshot`
-- `browser_js`
-- `browser_wait`
-- `browser_wait_for`
-- `browser_fill_form`
-- `browser_switch_tab`
+- `browser_navigate`, `browser_back`, `browser_forward`, `browser_reload`
+- `browser_snapshot`, `browser_click`, `browser_type`, `browser_hover`, `browser_select_option`
+- `browser_scroll`, `browser_press_key`, `browser_screenshot`, `browser_js`
+- `browser_wait`, `browser_wait_for`, `browser_fill_form`, `browser_switch_tab`
 
-`ChatViewModel` also registers:
+### AgentEventSelfHandler — Autonomous Dead-End Detection
 
-- `observe_browser` — wraps `browser_snapshot` into a PageAgent-like `<browser_state>` text view.
-- `ask_user` — pauses the AI tool loop for user input.
-- `set_task_iterations` — adjusts the tool-loop soft reminder threshold.
-- `update_todo` — updates the AI panel task list.
-- `start_subtask` / `finish_subtask` — marks subtask boundaries and triggers context compression.
+`Services/AgentEventSelfHandler.cs` monitors tool execution in real-time:
+
+- **Stale element reuse detection**: Tracks element IDs known to be invalid; blocks after 2 reuses. After 3 total stale element terminations, the tool loop is forcibly terminated.
+- **Repeated navigation failure**: Blocks URLs that fail navigation 2+ times, hosts that fail 4+ times.
+- **Same-action repetition**: Blocks when the same tool+parameter combo produces the same result 3+ times.
+- **No-progress observe/wait loop**: Detects when passive tools (observe/snapshot/wait/reload) produce identical results across 4+ consecutive calls.
+- **Ask_user recommendation tracking**: When tool results repeatedly suggest ask_user, injects system prompts and eventually terminates.
+- **Dead-end score accumulation**: Independent scoring; at score 4, the tool loop terminates.
+- Injects `[agent_event code=... severity=...]` system messages before each blocked/terminated action.
+
+### TaskStateMachine — Forced Subtask Execution
+
+`Services/TaskStateMachine.cs` enforces ordered subtask lifecycle:
+
+- **States**: `Planning` (waiting for update_todo) → `Executing` (running subtasks) → `Complete` (all done).
+- **Rules**:
+  1. `update_todo` only allowed in Planning state.
+  2. `start_subtask` / `finish_subtask` only on `ActiveSubtaskId`.
+  3. Subtasks execute in list order — no skipping.
+  4. `finish_subtask("completed")` auto-promotes the next pending subtask.
+  5. `update_todo` during execution is rejected.
+- **Compression hints**: `start_subtask` returns `CompressionLevel.Standard`; `finish_subtask("completed")` returns `CompressionLevel.Max`.
+- **Result**: `TransitionResult.Valid + Compression + TodoItems` for the AI client to act on.
 
 ## AI Client and Tool Loop
 
 `Services/AiClient.cs` supports two request formats:
 
-1. **OpenAI-compatible chat completions**: most providers use Bearer auth and `chat/completions` streaming with `delta.tool_calls`.
-2. **Anthropic native messages**: Anthropic uses `x-api-key`, `anthropic-version: 2023-06-01`, top-level `system`, and streaming `content_block_*` / `message_delta` events.
+1. **OpenAI-compatible chat completions**: Bearer auth, `chat/completions` streaming with `delta.tool_calls`.
+2. **Anthropic native messages**: `x-api-key`, `anthropic-version`, top-level `system`, streaming `content_block_*` / `message_delta`.
 
-`ChatViewModel.SendAsync()` has two paths:
+### ExecuteConversationAsync — Safety Layers
+
+`ChatViewModel.ExecuteConversationAsync` is an unbounded `for` loop with multiple safety mechanisms:
+
+**Hard limits**:
+- `MaxHardIterations = 80` — absolute cap, no exceptions.
+- `MaxToolResultChars = 2000` (tail: 500) — tool results truncated to prevent context pollution.
+- Context compression triggers at 50KB, targets 40KB, subtask completion targets 30KB.
+
+**Subtask gate**: When subtasks exist but AI returns text without tool calls, injects a system reminder. After 5 consecutive misses, terminates the request.
+
+**Planning gate**: Uses `TaskStateMachine` state — forces `update_todo` in Planning, `start_subtask` in Executing with no active subtask. Falls back to old message-scan logic if state machine is null.
+
+**AI repetition detection**: Fingerprints last 3 AI text replies (normalized hash); 2 consecutive identical fingerprints (>30 chars) → terminates.
+
+**browser_js null detection**: Tracks consecutive `browser_js` calls returning `{"data":"null"}` or `{"data":null}`. After 2 consecutive nulls, injects a strategy-change hint.
+
+**Stale result detector**: Legacy `skill_extract`/`skill_query` probe — 3 consecutive identical short results → terminate.
+
+**Tool retry in ChatViewModel**: Up to 4 attempts with increasing delay (0ms → 1s → 2s → 3s). Element tools auto-refresh snapshot on 3rd attempt.
+
+**Flow**:
 
 ```text
 SendAsync()
   ├─ no tools registered → AiClient.StreamMessageAsync()
   └─ tools registered    → AiClient.ExecuteConversationAsync(..., ExecuteAiToolAsync)
+
+ExecuteConversationAsync loop stops when:
+  ├─ AI returns text with no tool calls (and no gates force more)
+  ├─ ask_user returns __ASK_USER_PAUSED__ sentinel
+  ├─ cancellation token cancelled
+  ├─ hard iteration cap (80) reached
+  ├─ 3 consecutive stale probe results
+  ├─ AI repetition detected (2+ identical text fingerprints)
+  └─ API/streaming error
 ```
 
-`AiClient.ExecuteConversationAsync` is intentionally an unbounded `for` loop. It stops when:
-
-- the AI returns normal text with no tool calls;
-- `ask_user` returns the special pause prefix;
-- the cancellation token is cancelled;
-- the stale-result detector hits 3 consecutive stale probe results from legacy `skill_extract` / `skill_query`;
-- an API or streaming error is yielded.
-
-Important loop behavior:
-
-- `maxIterations` is a **soft reminder threshold**, not a hard cap.
-- `set_task_iterations` can set the soft threshold to 1–80 for the next phase.
-- When near the threshold, the loop injects a system reminder telling the model to be efficient.
-- Context compression runs when estimated conversation bytes exceed 150 KB, targets ~100 KB, and also runs as a 20-round / 40-message fallback.
-- `start_subtask` returns a sentinel that forces compression before the subtask proceeds.
-
-## `ask_user` Pause/Resume Pattern
+## ask_user Pause/Resume Pattern
 
 `ask_user` is handled directly in `ChatViewModel.ExecuteAiToolAsync`, not by the skill system.
 
@@ -264,30 +295,16 @@ Flow:
    - `PendingAskUserQuestion`
 5. UI displays the question and sets `IsAwaitingUserInput = true`.
 6. `RespondToQuestionAsync(option)` appends a `MessageRole.Tool` message for `ask_user` and resumes with `ContinueToolLoopAsync`.
-7. `__skip__` becomes: “用户选择跳过，请基于当前已有信息自行决定最佳方案并继续执行。”
+7. `__skip__` becomes: "用户选择跳过，请基于当前已有信息自行决定最佳方案并继续执行。"
 
 ## Skill System Status
 
-There are two skill-model families:
+Two skill-model families:
 
-1. `Models/SkillDefinition.cs` and siblings — legacy record-based models, not the active runtime path.
-2. `Services/Skills/SkillModels.cs` and related files — class-based MCP skill system.
+1. `Models/SkillDefinition.cs` and siblings — legacy record-based models.
+2. `Services/Skills/SkillModels.cs` and related — class-based MCP skill system (13 atomic + 7 composite + 6 strategy skills).
 
-The class-based MCP skill system defines:
-
-- 13 atomic skills
-- 7 composite skills
-- 6 strategy skills
-
-However, in the **current WebView2 startup path**, this system remains uninitialized because `MainWindow` does not call `ChatViewModel.SetChromeCdpEndpoint`. Browser automation for the AI therefore comes from `BrowserAutomationToolRouter`, not from `McpSkillExecutor`.
-
-If you work on the current browser-control feature, prefer:
-
-- `BrowserHostService`
-- `BrowserAutomationService`
-- `AutomationScripts`
-- `BrowserAutomationToolRouter`
-- `ChatViewModel.AttachAutomationRouter` / `ExecuteAiToolAsync`
+In the **current WebView2 startup path**, this system remains uninitialized because `MainWindow` does not call `ChatViewModel.SetChromeCdpEndpoint`. Browser automation comes from `BrowserAutomationToolRouter`.
 
 Only work on `SkillSystemIntegration`, `PlaywrightMcpClient`, `McpSkillExecutor`, or `ChromeProcessManager` when the task explicitly targets the legacy MCP/CDP path.
 
@@ -297,8 +314,8 @@ Only work on `SkillSystemIntegration`, `PlaywrightMcpClient`, `McpSkillExecutor`
 - Conversation files: `%LocalAppData%/SmartAI-Browser-Demo/conversations/*.json`.
 - WebView2 browser profile: `%LocalAppData%/SmartAI-Browser-Demo/webview2-profile/`.
 - Legacy external Chrome profile: `%LocalAppData%/SmartAI-Browser-Demo/chrome-profile/` (only for `ChromeProcessManager`).
-- Logs: `Log/` under the project/runtime working area, with old logs cleaned by `Logger`.
-- Downloads: tracked in-memory through `DownloadManager.Items`; the actual file path is provided by WebView2's download operation.
+- Logs: `Log/` under the project/runtime working area.
+- Downloads: tracked in-memory through `DownloadManager.Items`.
 
 ## Codegraph MCP Retrieval
 
@@ -314,7 +331,7 @@ Only work on `SkillSystemIntegration`, `PlaywrightMcpClient`, `McpSkillExecutor`
 ## Coding Guidelines for This Repo
 
 - Match the existing style: direct WPF event wiring, manual `INotifyPropertyChanged`, no DI container.
-- Use existing `Logger` calls and `Logger.Trace(...)` blocks for meaningful lifecycle/debug points.
+- Use existing `Logger` calls and `Logger.Trace(...)` blocks for lifecycle/debug points.
 - Any WebView2 access from background code must go through the UI dispatcher pattern used in `BrowserAutomationService`.
 - Keep automation operations serialized unless there is a deliberate design change.
 - Preserve `Guid` tab identity from `TabInfo.Id` when binding WebView2 controls.
@@ -327,6 +344,8 @@ Only work on `SkillSystemIntegration`, `PlaywrightMcpClient`, `McpSkillExecutor`
 - When changing AI provider behavior, update both OpenAI-compatible and Anthropic-native paths where applicable.
 - Do not revive or depend on `WebView2AutomationBridge.cs`; it is `#if false` dead code.
 - Do not assume `ChromeProcessManager` or Playwright MCP is active in the running app.
+- Changes to `AiClient` tool loop safety must preserve the ordering: hard cap → compression → subtask gate → planning gate → tool execution → stale result detection → repetition check.
+- When modifying `AgentEventSelfHandler`, ensure all new detection logic returns `ToolSelfHandlingDecision.Block` or adds events via `AddEvent`.
 
 ## 项目理解准则
 
@@ -343,5 +362,6 @@ Only work on `SkillSystemIntegration`, `PlaywrightMcpClient`, `McpSkillExecutor`
 - **WebView2 operation hangs**: inspect dispatcher usage and `DefaultOperationTimeoutMs` in `BrowserAutomationService`.
 - **UI freezes during streaming**: check `GetUiThrottleMs` in `ChatViewModel.SendAsync` / `ContinueToolLoopAsync` and the Markdown converter.
 - **Tool loop grows too large**: inspect context compression in `AiClient.CompressHistory` and subtask boundaries.
+- **AI tool loop terminated by self-handling**: check `AgentEventSelfHandler` log — look for `stale_element`, `repeat_same_action`, `repeated_navigation_failure`, `no_progress_observe_wait_loop` events.
 - **Popup/new window behavior**: `BrowserHostService.NewWindowRequested` converts windows into app tabs; script dialogs are auto-handled according to `AutoDismissDialogs`.
 - **MCP logs appear irrelevant**: in the current WebView2 path, MCP is legacy and normally uninitialized.

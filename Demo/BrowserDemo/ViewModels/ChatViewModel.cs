@@ -45,6 +45,9 @@ public class ChatViewModel : INotifyPropertyChanged
     /// <summary>WebView2 自动化工具路由器（Phase 4b 主路径）</summary>
     private BrowserAutomationToolRouter? _automationRouter;
 
+    /// <summary>任务状态机 —— 强制 AI 按子任务清单顺序执行</summary>
+    private readonly TaskStateMachine _taskStateMachine = new();
+
     /// <summary>技能执行历史</summary>
     public ObservableCollection<SkillExecResult> SkillExecutionHistory { get; } = new();
 
@@ -168,7 +171,7 @@ public class ChatViewModel : INotifyPropertyChanged
         Logger.Debug($"当前 AI 配置: provider={_aiClient.Settings.ProviderKey}, model={_aiClient.Settings.Model}");
         Logger.Debug($"ChatViewModel: ContextBuilder 已绑定 (IsEnabled={_contextBuilder.IsEnabled}, 已有 {_contextBuilder.RegisteredTools.Count} 个工具)");
 
-        SendCommand = new RelayCommand(_ => SendAsync(), _ => !IsLoading && !string.IsNullOrWhiteSpace(InputText));
+        SendCommand = new RelayCommand(_ => SendAsync(), _ => !IsLoading && !IsAwaitingUserInput && !string.IsNullOrWhiteSpace(InputText));
         ClearCommand = new RelayCommand(_ => ClearConversation());
         NewConversationCommand = new RelayCommand(_ => NewConversation());
         LoadConversationCommand = new RelayCommand(id => LoadConversation(id));
@@ -215,6 +218,9 @@ public class ChatViewModel : INotifyPropertyChanged
         RegisterSetIterationsTool();
         RegisterUpdateTodoTool();
         RegisterSubtaskTools();
+
+        // 连接状态机到 ContextBuilder，使规划门禁和上下文压缩能够正确工作
+        _contextBuilder.TaskStateMachine = _taskStateMachine;
 
         Logger.Info($"[Automation] WebView2 工具路由器已挂载: {router.GetToolDefinitions().Count} 个浏览器工具，总工具数 {_contextBuilder.RegisteredTools.Count}");
     }
@@ -307,10 +313,8 @@ public class ChatViewModel : INotifyPropertyChanged
         _contextBuilder.RegisterTool(new ToolDefinition
         {
             Name = "ask_user",
-            Description = "[用户交互] 在执行过程中暂停并向用户提问。当你遇到以下情况时使用此工具："
-                + "(1) 不确定该采用哪种方案，需用户引导；(2) 需要确认潜在风险操作；"
-                + "(3) 发现多个有效选项需要用户选择；(4) 需要只有用户才能提供的信息。"
-                + "调用此工具后，执行会暂停，用户回答后自动恢复。",
+            Description = "[用户交互] 在执行过程中暂停并向用户提问。**严格限制使用条件**：只有在以下情况才允许调用：(1) 用户任务中存在真正缺失的关键信息（如用户说'帮我登录'但未提供任何账号信息）；(2) 遇到互斥的风险操作需用户确认（如删除数据）。"
+                + "**禁止滥用**：如果用户已经在对话中提供了所需信息（如手机号、用户名等），你必须直接使用 browser_type/browser_fill_form 等工具填入，不得反问。如果存在多个可行路径但都可以推进，选最直接的执行，不要问用户。调用此工具后，执行会暂停，用户回答后自动恢复。",
             Parameters = new()
             {
                 ["question"] = new Dictionary<string, object?>
@@ -836,7 +840,7 @@ public class ChatViewModel : INotifyPropertyChanged
             return msg;
         }
 
-        // ★★★ 处理 update_todo 工具：实时刷新 UI 任务清单 ★★★
+        // ★★★ 处理 update_todo 工具：通过状态机建立任务清单 ★★★
         if (toolName == "update_todo" && args != null)
         {
             var items = GetTodoItems(args);
@@ -847,53 +851,64 @@ public class ChatViewModel : INotifyPropertyChanged
                 return "❌ update_todo 参数无效：items 不能为空。请先将用户任务拆分为 2-6 个可执行子任务，并一次性传入完整清单。";
             }
 
+            var result = _taskStateMachine.ProcessTodoUpdate(items);
+            if (!result.Valid)
+                return $"❌ {result.Error}";
+
+            // 映射状态机项为 AiTodoItem 更新 UI
             RunOnUiThread(() =>
             {
-                var existingMap = TodoItems.ToDictionary(x => x.Id, x => x);
                 TodoItems.Clear();
-                foreach (var item in items)
+                foreach (var item in result.TodoItems)
                 {
-                    // 合并策略：如果该 ID 的任务已存在且新 status 为默认 pending，则保留原有状态
-                    // 防止 AI 未发送 status 字段时把已完成的任务误重置为待办
-                    if (existingMap.TryGetValue(item.Id, out var existing) && item.Status == "pending")
+                    TodoItems.Add(new AiTodoItem
                     {
-                        item.Status = existing.Status;
-                    }
-                    TodoItems.Add(item);
+                        Id = item.Id,
+                        Title = item.Title,
+                        Status = item.Status,
+                        Notes = item.Status == "in_progress" ? summary : null
+                    });
                 }
                 OnPropertyChanged(nameof(TodoItems));
                 StatusMessage = $"🧭 {summary}";
             });
 
             _contextBuilder.RecordRuntimeToolEvidence("update_todo");
-            _contextBuilder.RuntimeHasTodoItems = true;
 
-            Logger.Info($"update_todo: {summary} ({items.Count}项)");
+            Logger.Info($"update_todo: {summary} ({result.TodoItems.Count}项)");
             return $"✅ Todo list updated: {summary}";
         }
 
-        // ★★★ 处理子任务边界工具：标记状态并触发上下文压缩 ★★★
+        // ★★★ 处理 start_subtask 工具：通过状态机校验并触发上下文压缩 ★★★
         if (toolName == "start_subtask" && args != null)
         {
             var id = GetArg<string>(args, "id")?.Trim();
             var title = GetArg<string>(args, "title")?.Trim();
-            if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(title))
-                return "❌ start_subtask 参数无效：id 和 title 不能为空。";
+            if (string.IsNullOrWhiteSpace(id))
+                return "❌ start_subtask 参数无效：id 不能为空。";
 
             var plan = GetArg<string>(args, "plan") ?? "开始执行子任务";
-            var exists = RunOnUiThread(() => TodoItems.Any(x => x.Id == id));
-            if (!exists)
+            var result = _taskStateMachine.ProcessStartSubtask(id);
+            if (!result.Valid)
+                return $"❌ {result.Error}";
+
+            // 映射状态机项更新 UI
+            RunOnUiThread(() =>
             {
-                Logger.Warning($"start_subtask 收到未在完整清单中预先登记的子任务: {id} — {title}");
-                return $"❌ start_subtask 未找到子任务：{id}。必须先通过 update_todo 一次性建立完整任务清单，再开始第一个子任务。";
-            }
-            UpdateTodoItem(id, title, "in_progress", plan);
+                foreach (var item in result.TodoItems)
+                {
+                    UpdateTodoItem(item.Id, item.Title, item.Status, item.Status == "in_progress" ? plan : null);
+                }
+            });
+
             _contextBuilder.RecordRuntimeToolEvidence("start_subtask");
-            _contextBuilder.RuntimeActiveSubtaskId = id;
 
             var msg = $"▶️ 开始子任务：{title}。执行前已压缩此前上下文。计划：{plan}";
             Logger.Info($"start_subtask: {msg}");
-            return $"__SUBTASK_CONTEXT_COMPRESSED__:{msg}";
+
+            if (result.Compression == CompressionLevel.Standard)
+                return $"__SUBTASK_CONTEXT_COMPRESSED__:{msg}";
+            return msg;
         }
 
         if (toolName == "finish_subtask" && args != null)
@@ -902,26 +917,62 @@ public class ChatViewModel : INotifyPropertyChanged
             if (string.IsNullOrWhiteSpace(id))
                 return "❌ finish_subtask 参数无效：id 不能为空。";
 
-            // finish_subtask 默认表示完成，未传 status 时默认为 completed 而非 pending
             var rawStatus = GetArg<string>(args, "status") ?? "completed";
             var status = NormalizeTodoStatus(rawStatus);
-            var summary = GetArg<string>(args, "summary") ?? "（无总结）";
-            var nextStep = GetArg<string>(args, "next_step");
-            var title = RunOnUiThread(() => TodoItems.FirstOrDefault(x => x.Id == id)?.Title);
-            if (string.IsNullOrWhiteSpace(title))
-                return $"❌ finish_subtask 未找到子任务：{id}。请先通过 update_todo 建立完整任务清单。";
+            if (status != "completed" && status != "blocked")
+                return "❌ finish_subtask 的 status 必须是 'completed' 或 'blocked'。";
 
-            UpdateTodoItem(id, title, status, summary);
+            var summary = GetArg<string>(args, "summary") ?? "（无总结）";
+            var result = _taskStateMachine.ProcessFinishSubtask(id, status);
+            if (!result.Valid)
+                return $"❌ {result.Error}";
+
+            // 映射状态机项更新 UI
+            TaskItem? activeItem = null;
+            RunOnUiThread(() =>
+            {
+                foreach (var item in result.TodoItems)
+                {
+                    UpdateTodoItem(item.Id, item.Title, item.Status, item.Status == "in_progress" ? $"继续执行：{summary}" : summary);
+                }
+                if (result.TodoItems.Any(t => t.Status == "in_progress"))
+                    activeItem = result.TodoItems.First(t => t.Status == "in_progress");
+            });
+
             _contextBuilder.RecordRuntimeToolEvidence("finish_subtask");
-            var nextTodo = status == "completed" ? TryStartNextPendingTodo(id, nextStep) : null;
-            _contextBuilder.RuntimeActiveSubtaskId = nextTodo?.Id;
+
+            // 构造用户可读消息
+            var title = RunOnUiThread(() => TodoItems.FirstOrDefault(x => x.Id == id)?.Title ?? id);
+            var allDone = _taskStateMachine.IsComplete;
+
+            // 所有子任务已完成：将 UI 中剩余的 pending/blocked 项统一标记为 completed
+            if (allDone)
+            {
+                RunOnUiThread(() =>
+                {
+                    foreach (var item in TodoItems.Where(x => x.Status != "completed").ToList())
+                    {
+                        item.Status = "completed";
+                        if (string.IsNullOrWhiteSpace(item.Notes))
+                            item.Notes = "所有子任务已通过 finish_subtask 完成。";
+                    }
+                    OnPropertyChanged(nameof(TodoItems));
+                    _contextBuilder.RuntimeActiveSubtaskId = null;
+                });
+            }
 
             var msg = status == "blocked"
-                ? $"❌ 子任务受阻：{title}。原因：{summary}。请用户手动处理：{nextStep ?? "请检查当前页面或操作环境。"}"
-                : nextTodo != null
-                    ? $"✅ 子任务完成：{title}。结果：{summary}\n▶️ 已自动开始下一子任务：{nextTodo.Title}。计划：{nextTodo.Notes}"
-                    : $"✅ 子任务完成：{title}。结果：{summary}";
+                ? $"❌ 子任务受阻：{title}。原因：{summary}。请用户手动处理：{summary}"
+                : allDone
+                    ? $"✅ 所有子任务已完成。{title} 结果：{summary}"
+                    : activeItem != null
+                        ? $"✅ 子任务完成：{title}。结果：{summary}\n▶️ 已自动开始下一子任务：{activeItem.Title}。"
+                        : $"✅ 子任务完成：{title}。结果：{summary}";
+
             Logger.Info($"finish_subtask: {msg}");
+
+            if (result.Compression == CompressionLevel.Max)
+                return $"__SUBTASK_COMPLETED_COMPRESSED__:{msg}";
             return msg;
         }
 
@@ -1241,6 +1292,16 @@ public class ChatViewModel : INotifyPropertyChanged
                 // 使用可变的 List 以支持 ExecuteConversationAsync 的内部追加；过滤 ask_user UI 提示卡片
                 var mutableMessages = BuildApiConversationMessages();
 
+                // 前置检测：如果任务清单尚未建立，注入系统提示要求 AI 先调用 update_todo
+                if (_taskStateMachine.CurrentState == TaskState.Planning)
+                {
+                    AddSystemMessage(
+                        "如果你正在执行一个多步骤任务，请先调用 `update_todo` 创建完整的任务清单，" +
+                        "将任务拆分为 2-6 个可执行的子任务，然后按清单顺序逐步完成。"
+                    );
+                    mutableMessages = BuildApiConversationMessages(); // 重新捕获，包含刚追加的系统消息
+                }
+
                 await foreach (var chunk in _aiClient.ExecuteConversationAsync(
                         mutableMessages, ExecuteAiToolAsync, ct: ct))
                     {
@@ -1311,7 +1372,14 @@ public class ChatViewModel : INotifyPropertyChanged
                 else
                 {
                     FinalizeAssistantMessage(aiMsg);
-                    TryFinalizeTodoAfterAssistantReply(aiMsg.Content);
+                }
+                // 后置兜底检测：工具循环正常结束后，如果 AI 仍未建立任务清单，追加提醒
+                if (_taskStateMachine.CurrentState == TaskState.Planning)
+                {
+                    AddSystemMessage(
+                        "你还没有调用 `update_todo` 建立任务清单。如果这是一个多步骤任务，请先拆分任务清单再继续执行。"
+                    );
+                    Logger.Info("兜底检测：AI 本轮未调用 update_todo，已追加系统提醒");
                 }
                 StatusMessage = IsAwaitingUserInput ? "AI 正在等待你的回答…" : GetStatusMessageAfterToolLoop(aiMsg.Content);
                 Logger.Info($"AI 请求完成（工具循环）: {chunkCount} 个数据块, {aiMsg.Content.Length} 字符");
@@ -1424,6 +1492,9 @@ public class ChatViewModel : INotifyPropertyChanged
         Messages.Clear();
         TodoItems.Clear();
         _contextBuilder.ClearRuntimeState();
+        // 显式复位状态机（ClearRuntimeState 内部也调用了 TaskStateMachine?.Reset()）
+        _taskStateMachine.Reset();
+        _contextBuilder.TaskStateMachine = _taskStateMachine;
         AddSystemMessage("新的对话已开始。有什么需要帮忙的吗？我是 Bermain（板儿面）。");
         RefreshConversationList();
         // GC.Collect() 已移除：在 UI 线程上触发 Gen2 阻塞回收会导致界面卡死
@@ -1707,41 +1778,6 @@ public class ChatViewModel : INotifyPropertyChanged
             return "任务未完成，等待继续…";
 
         return "就绪";
-    }
-
-    private void TryFinalizeTodoAfterAssistantReply(string content)
-    {
-        if (string.IsNullOrWhiteSpace(content))
-            return;
-
-        RunOnUiThread(() =>
-        {
-            if (TodoItems.Count == 0 || TodoItems.Any(x => x.Status == "blocked"))
-                return;
-
-            var hasFinalAnswer = content.Contains("总结", StringComparison.OrdinalIgnoreCase)
-                || content.Contains("重要", StringComparison.OrdinalIgnoreCase)
-                || content.Contains("已完成", StringComparison.OrdinalIgnoreCase)
-                || content.Contains("以下", StringComparison.OrdinalIgnoreCase)
-                || content.Contains("found", StringComparison.OrdinalIgnoreCase)
-                || content.Contains("important", StringComparison.OrdinalIgnoreCase);
-            if (!hasFinalAnswer)
-                return;
-
-            var changed = false;
-            foreach (var item in TodoItems.Where(x => x.Status != "completed").ToList())
-            {
-                item.Status = "completed";
-                if (string.IsNullOrWhiteSpace(item.Notes))
-                    item.Notes = "AI 已返回最终结果。";
-                changed = true;
-            }
-
-            if (!changed) return;
-            _contextBuilder.RuntimeActiveSubtaskId = null;
-            OnPropertyChanged(nameof(TodoItems));
-            Logger.Info("最终回复后自动将未完成任务清单标记为 completed");
-        });
     }
 
     private static List<AiTodoItem> GetTodoItems(Dictionary<string, object?> args)
