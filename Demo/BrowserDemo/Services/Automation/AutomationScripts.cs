@@ -292,7 +292,7 @@ public static class AutomationScripts
                     });
                 },
 
-                // 输入文本：原生 setter 绕过框架拦截 + dispatch input/change
+                // 输入文本：在光标位置插入 + 原生 setter 绕过框架拦截 + dispatch input/change
                 typeInElement: function(id, text, clearFirst) {
                     var el = findById(id);
                     if (!el) return JSON.stringify({ error: 'not_found', id: id });
@@ -304,12 +304,27 @@ public static class AutomationScripts
                             var proto = (tag === 'INPUT' ? window.HTMLInputElement : window.HTMLTextAreaElement).prototype;
                             var desc = Object.getOwnPropertyDescriptor(proto, 'value');
                             var nativeSetter = desc && desc.set;
-                            var finalValue = clearFirst ? text : ((el.value || '') + text);
+                            var finalValue;
+                            var selStart = el.selectionStart ?? el.value.length;
+                            var selEnd = el.selectionEnd ?? el.value.length;
+                            var curVal = el.value || '';
+                            if (clearFirst) {
+                                finalValue = text;
+                            } else if (selStart === selEnd) {
+                                // 光标位置插入
+                                finalValue = curVal.substring(0, selStart) + text + curVal.substring(selEnd);
+                            } else {
+                                // 有选区则替换选区
+                                finalValue = curVal.substring(0, selStart) + text + curVal.substring(selEnd);
+                            }
                             if (nativeSetter) {
                                 nativeSetter.call(el, finalValue);
                             } else {
                                 el.value = finalValue;
                             }
+                            // 恢复光标到插入后位置
+                            el.selectionStart = selStart + text.length;
+                            el.selectionEnd = selStart + text.length;
                             el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
                             el.dispatchEvent(new Event('change', { bubbles: true }));
                         } catch (e) {
@@ -317,8 +332,18 @@ public static class AutomationScripts
                         }
                     } else if (el.isContentEditable) {
                         try {
-                            if (clearFirst) el.textContent = '';
-                            el.textContent = (el.textContent || '') + text;
+                            var cursorPos = el.selectionStart;
+                            if (cursorPos != null) {
+                                // 用 Range 在光标处插入
+                                var range = el.getRangeAt(0);
+                                range.setStart(el.childNodes[0] || el, cursorPos);
+                                range.setEnd(el.childNodes[0] || el, cursorPos);
+                                range.insertNode(document.createTextNode(text));
+                            } else if (clearFirst) {
+                                el.textContent = text;
+                            } else {
+                                el.textContent = (el.textContent || '') + text;
+                            }
                             el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
                             el.dispatchEvent(new Event('change', { bubbles: true }));
                         } catch (e) {

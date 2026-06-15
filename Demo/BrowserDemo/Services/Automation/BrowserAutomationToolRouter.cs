@@ -55,7 +55,7 @@ public class BrowserAutomationToolRouter
         {
             ["element_id"] = IntParam("browser_snapshot 返回的 elements[*].id 整数"),
             ["text"] = StringParam("要输入的文本"),
-            ["clear_first"] = BoolParam("输入前是否先清空原内容，默认 true")
+            ["clear_first"] = BoolParam("输入前是否先清空原内容，默认 false（在光标位置插入）")
         }, "element_id", "text"),
 
         Tool("browser_hover", "[浏览器] 将鼠标悬停到页面元素上。必须使用 browser_snapshot 返回的整数 element_id。", new()
@@ -140,7 +140,7 @@ public class BrowserAutomationToolRouter
 
                 "browser_click" => Format(await _automation.ClickAsync(RequiredElementId(args))),
                 "browser_type" => Format(await _automation.TypeAsync(
-                    RequiredElementId(args), RequiredString(args, "text"), GetBool(args, "clear_first") ?? true)),
+                    RequiredElementId(args), RequiredString(args, "text"), GetBool(args, "clear_first") ?? false)),
                 "browser_hover" => Format(await _automation.HoverAsync(RequiredElementId(args))),
                 "browser_select_option" => Format(await _automation.SelectOptionAsync(
                     RequiredElementId(args), RequiredString(args, "value"))),

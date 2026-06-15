@@ -376,7 +376,7 @@ public class AiClient : IAiClient, IDisposable
                 {
                     id = tc.Id,
                     type = tc.Type,
-                    function = new { name = tc.FunctionName, arguments = tc.FunctionArguments }
+                    function = new { name = tc.FunctionName, arguments = SanitizeToolArguments(tc.FunctionArguments) }
                 }).ToList();
 
                 msgList.Add(new { role = "assistant", content = m.Content ?? "", tool_calls = tcList });
@@ -1497,6 +1497,37 @@ public class AiClient : IAiClient, IDisposable
     }
 
     // ========== 辅助方法 ==========
+
+    /// <summary>
+    /// 校验并修复工具调用参数 JSON。
+    /// 某些模型在流式响应中会返回不完整的参数 JSON（如单个 "{" 或缺少闭合括号），
+    /// 这类数据写入历史消息后再发给上游代理时，代理会尝试解析 arguments 字段报 JSON 错误。
+    /// 本方法确保返回的字符串一定是合法的 JSON 对象：非法则降级为 "{}"。
+    /// </summary>
+    private static string SanitizeToolArguments(string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            return string.Empty;
+
+        // 快速预检：以 { 开头、以 } 结尾是合法 JSON 对象的基本前提
+        var trimmed = raw.Trim();
+        if (trimmed.Length < 2 || trimmed[0] != '{' || trimmed[trimmed.Length - 1] != '}')
+            return string.Empty;
+
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(trimmed);
+            if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object)
+                return raw; // 合法 JSON 对象，原样返回
+        }
+        catch
+        {
+            // 解析失败，走下面的降级路径
+        }
+
+        Logger.Warning($"工具参数 JSON 不合法，已降级为空对象: {raw.Truncate(80)}");
+        return string.Empty;
+    }
 
     private static string BuildPlanningToolReminder(string forcedTool)
         => $"当前轮必须优先调用 `{forcedTool}`，不要先输出普通文本，也不要先调用浏览器或信息收集工具。";
