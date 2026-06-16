@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with th
 
 **SmartAI Browser Demo** is a Windows intelligent browser prototype built with **C# / .NET 8 / WPF**. The app runs an embedded **WebView2** browser host and exposes browser-control tools to the AI assistant **Bermain（板儿面）** through hand-written function calling schemas. A task state machine forces the AI to break complex tasks into ordered subtasks and execute them sequentially.
 
+**BrowserSkills** is a standalone C# Class Library (`BrowserSkills/`) extracted from the demo project. It packages the full browser automation capability chain — core services, models, skills, strategies, and intelligence layers — as a reusable `net8.0-windows` library depending only on `Microsoft.Web.WebView2`. The Demo project currently keeps its own copies of the services; BrowserSkills exists as a reference extraction for future reuse or decoupling.
+
 The important current reality is:
 
 - The active browser host is `BrowserHostService` + WebView2 controls embedded directly in the WPF window.
@@ -14,7 +16,8 @@ The important current reality is:
 - An **AgentEventSelfHandler** performs autonomous dead-end detection: stale element reuse, repeated navigation failures, no-progress loops, and repeated same-action blocking.
 - The older Playwright MCP / external Chrome CDP path still exists in code (`SkillSystemIntegration`, `PlaywrightMcpClient`, `ChromeProcessManager`) but is not used by the current startup flow because `MainWindow.OnLoaded` no longer calls `ChatViewModel.SetChromeCdpEndpoint`.
 - `WebView2AutomationBridge.cs` is fully disabled with `#if false` and must be treated as dead code.
-- `AiClient.ExecuteConversationAsync` has multiple anti-loop mechanisms: hard iteration cap (80), subtask gate, planning gate, AI repetition detection, stale result detector, and context compression.
+- `AiClient.ExecuteConversationAsync` has multiple anti-loop mechanisms: hard iteration cap (80), subtask gate, planning gate, AI repetition detection, stale result detector, context compression, and budget progressive warnings (50%/75%/90%/95%).
+- New self-detection capabilities: DOM text hash page-stalled detection, consecutive action failure replan trigger, and exploration step limit (disconnected from subtasks).
 
 ## Build, Run, and Verification
 
@@ -101,6 +104,42 @@ Demo/BrowserDemo/
 └── Converters/
     └── MarkdownToFlowDocumentConverter.cs
 
+BrowserSkills/                         # Standalone extracted browser automation library
+├── BrowserSkills.csproj               # net8.0-windows, depends on Microsoft.Web.WebView2
+├── README.md
+├── Core/
+│   ├── BrowserAutomationService.cs    # WebView2 automation engine
+│   ├── BrowserAutomationToolRouter.cs # AI tool router (schema + dispatch)
+│   ├── AutomationScripts.cs           # JS script generator
+│   └── ILogger.cs                     # Logging interface
+├── Models/
+│   ├── ToolDefinition.cs              # AI tool definitions
+│   ├── AiTodoItem.cs                  # Task list items
+│   ├── ChatMessage.cs                 # Conversation messages
+│   ├── ToolCallData.cs                # Tool call data
+│   ├── UserQuestionInfo.cs            # ask_user question info
+│   ├── MessageRole.cs                 # Message role enum
+│   ├── AssistantResponseSections.cs   # Response sections
+│   ├── AssistantResponseParser.cs     # Response parser
+│   └── StringExtensions.cs           # String utilities
+├── Skills/
+│   ├── SkillModels.cs                 # Skill model base classes
+│   ├── SkillRegistry.cs               # Skill registry
+│   ├── McpSkillDataProvider.cs        # Skill data definitions
+│   └── SkillExecutionContext.cs      # Execution context
+├── Strategy/
+│   ├── IStrategyHandler.cs            # Strategy interface
+│   ├── NavigationStrategy.cs          # Navigation strategy
+│   ├── LocateStrategy.cs              # Locate strategy
+│   ├── RetryStrategy.cs               # Retry strategy
+│   ├── ContextStrategy.cs             # Context strategy
+│   ├── RecoveryStrategy.cs            # Recovery strategy
+│   └── PrivacyStrategy.cs             # Privacy strategy
+└── Intelligence/
+    ├── ContextBuilder.cs              # System prompt builder
+    ├── TaskStateMachine.cs            # Subtask state machine
+    └── AgentEventSelfHandler.cs       # Self-detector
+
 Tools/
 ├── playwright-mcp/playwright-mcp-0.0.75/ # Bundled legacy Playwright MCP server
 └── platform-tools/                       # Android ADB binaries
@@ -120,6 +159,10 @@ Tools/
 | Task state machine | `TaskStateMachine` (Planning → Executing → Complete) forces ordered subtask execution |
 | Agent self-handling | `AgentEventSelfHandler` detects dead-ends: stale elements, repeated failures, no-progress loops |
 | AI client safety | Hard iteration cap (80), context compression triggers at 50KB, tool result truncation at 2000 chars, AI repetition detection |
+| Budget warnings | Progressive alerts at 50%/75%/90%/95% iteration consumption |
+| Page stalled detection | DOM text hash tracking via `RecordDomTextHash()` — alerts at 2 consecutive unchanged, terminates at 4 |
+| Consecutive failure replan | `RecordActionOutcome()` — warns at 3 failures, requires replanning |
+| Exploration limit | `RecordStepWithSubtask()` — warns after 5 steps without subtask association |
 | Providers | `ProviderManager` registers OpenAI, Anthropic, Google, DeepSeek, xAI, Groq, Cerebras, Mistral, Together, Fireworks, OpenRouter, Alibaba, Zhipu, Moonshot, SiliconFlow, Ollama, DeepInfra |
 | Settings storage | `ai_settings.json` next to the executable (`AppDomain.CurrentDomain.BaseDirectory`) with multi-profile support via `AiSettingsStore` |
 | Conversations | JSON files under `%LocalAppData%/SmartAI-Browser-Demo/conversations/` |
@@ -184,8 +227,9 @@ MainWindow.OnLoaded
 - Called from the AI/tool loop on background threads; switches to WPF UI thread via `Dispatcher.InvokeAsync`.
 - Serializes operations with `SemaphoreSlim(1,1)`.
 - Targets the current active tab (`SwitchToTab(Guid)`).
-- Exposes: navigation, back/forward/reload, click/type/hover/select, scroll, key press, screenshot, JS evaluation, wait, wait-for-text, form filling.
+- Exposes: navigation, back/forward/reload, click/type/hover/select, scroll, key press, screenshot, JS evaluation, wait, wait-for-text, form filling, DOM text hash extraction.
 - Element tools use integer `element_id` from `browser_snapshot`.
+- `GetDomTextHashAsync()` — returns a hash of page text content for page-stalled detection (used by `AgentEventSelfHandler`).
 
 ### AutomationScripts — JavaScript Snapshot Engine
 
@@ -218,6 +262,9 @@ Currently registered browser tools:
 - **No-progress observe/wait loop**: Detects when passive tools (observe/snapshot/wait/reload) produce identical results across 4+ consecutive calls.
 - **Ask_user recommendation tracking**: When tool results repeatedly suggest ask_user, injects system prompts and eventually terminates.
 - **Dead-end score accumulation**: Independent scoring; at score 4, the tool loop terminates.
+- **DOM text hash page-stalled detection** (new): Tracks `dom_text_hash` from snapshots; warns at 2 consecutive unchanged, terminates at 4.
+- **Consecutive action failure replan trigger** (new): `RecordActionOutcome(false)` increments counter; at 3 warns to replan via `update_todo`.
+- **Exploration step limit** (new): `RecordStepWithSubtask(false)` tracks steps without subtask association; warns at 5 disconnected steps.
 - Injects `[agent_event code=... severity=...]` system messages before each blocked/terminated action.
 
 ### TaskStateMachine — Forced Subtask Execution
@@ -250,6 +297,8 @@ Currently registered browser tools:
 - `MaxToolResultChars = 2000` (tail: 500) — tool results truncated to prevent context pollution.
 - Context compression triggers at 50KB, targets 40KB, subtask completion targets 30KB.
 
+**Budget progressive warnings** (new): At 50%/75%/90%/95% of hard iteration cap, injects `[agent_event code=budget_warning]` system messages to prompt the AI to consolidate and finish.
+
 **Subtask gate**: When subtasks exist but AI returns text without tool calls, injects a system reminder. After 5 consecutive misses, terminates the request.
 
 **Planning gate**: Uses `TaskStateMachine` state — forces `update_todo` in Planning, `start_subtask` in Executing with no active subtask. Falls back to old message-scan logic if state machine is null.
@@ -276,6 +325,8 @@ ExecuteConversationAsync loop stops when:
   ├─ hard iteration cap (80) reached
   ├─ 3 consecutive stale probe results
   ├─ AI repetition detected (2+ identical text fingerprints)
+  ├─ page_stalled_fatal (DOM text hash unchanged 4 consecutive)
+  ├─ exploration_limit (5 steps without subtask association)
   └─ API/streaming error
 ```
 
@@ -344,8 +395,9 @@ Only work on `SkillSystemIntegration`, `PlaywrightMcpClient`, `McpSkillExecutor`
 - When changing AI provider behavior, update both OpenAI-compatible and Anthropic-native paths where applicable.
 - Do not revive or depend on `WebView2AutomationBridge.cs`; it is `#if false` dead code.
 - Do not assume `ChromeProcessManager` or Playwright MCP is active in the running app.
-- Changes to `AiClient` tool loop safety must preserve the ordering: hard cap → compression → subtask gate → planning gate → tool execution → stale result detection → repetition check.
+- Changes to `AiClient` tool loop safety must preserve the ordering: hard cap → budget warning → compression → subtask gate → planning gate → tool execution → stale result detection → repetition check → page-stalled/failure/exploration self-detection.
 - When modifying `AgentEventSelfHandler`, ensure all new detection logic returns `ToolSelfHandlingDecision.Block` or adds events via `AddEvent`.
+- **BrowserSkills library** (`BrowserSkills/`) is a standalone extracted copy of the automation chain. Changes to it do NOT affect the Demo project — the Demo keeps its own copies. Use BrowserSkills for documentation/reference or as a reusable library basis.
 
 ## 项目理解准则
 
@@ -362,6 +414,6 @@ Only work on `SkillSystemIntegration`, `PlaywrightMcpClient`, `McpSkillExecutor`
 - **WebView2 operation hangs**: inspect dispatcher usage and `DefaultOperationTimeoutMs` in `BrowserAutomationService`.
 - **UI freezes during streaming**: check `GetUiThrottleMs` in `ChatViewModel.SendAsync` / `ContinueToolLoopAsync` and the Markdown converter.
 - **Tool loop grows too large**: inspect context compression in `AiClient.CompressHistory` and subtask boundaries.
-- **AI tool loop terminated by self-handling**: check `AgentEventSelfHandler` log — look for `stale_element`, `repeat_same_action`, `repeated_navigation_failure`, `no_progress_observe_wait_loop` events.
+- **AI tool loop terminated by self-handling**: check `AgentEventSelfHandler` log — look for `stale_element`, `repeat_same_action`, `repeated_navigation_failure`, `no_progress_observe_wait_loop`, `page_stalled_fatal`, `replan_critical`, `exploration_limit` events.
 - **Popup/new window behavior**: `BrowserHostService.NewWindowRequested` converts windows into app tabs; script dialogs are auto-handled according to `AutoDismissDialogs`.
 - **MCP logs appear irrelevant**: in the current WebView2 path, MCP is legacy and normally uninitialized.

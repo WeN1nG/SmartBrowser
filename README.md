@@ -38,11 +38,15 @@
 | 上下文自动压缩 | 对话超 50KB 自动压缩至 ~40KB，子任务完成时压缩至 ~30KB |
 | 会话持久化 | 自动保存对话 JSON，支持加载历史对话 |
 | **任务状态机** | 强制 AI 按 Planning → Executing → Complete 顺序执行子任务，不可跳序 |
-| **死胡同自检测** | 自动检测过期元素复用、重复导航失败、无进展循环，注入纠正提示或终止工具循环 |
+| **死胡同自检测** | 自动检测过期元素复用、重复导航失败、无进展循环、页面停滞、连续失败、探索限制，注入纠正提示或终止工具循环 |
 | **AI 复读检测** | 连续多轮返回高度相似文本时自动终止，防止 AI 原地打转 |
 | **硬迭代上限** | 工具循环最多 80 轮，超出强制终止 |
+| **预算渐进警告** | 在 50%/75%/90%/95% 消耗点注入提醒，引导 AI 整合结果 |
+| **DOM 页面停滞检测** | 通过 `browser_snapshot` 的 DOM text hash 追踪页面变化，连续 2 次无变化告警，4 次终止 |
+| **连续失败 replan 触发** | 工具执行连续失败 3 步后提示 AI 重新规划子任务 |
+| **探索步数限制** | 连续 5 步未关联任何子任务时提醒 AI 制定明确计划 |
 
-### AI 可调用的浏览器工具（17 个）
+### AI 可调用的浏览器工具（18 个）
 
 | 工具 | 功能 |
 |------|------|
@@ -84,7 +88,7 @@
 | AI 协议 | OpenAI-compatible SSE / Anthropic-native Messages SSE |
 | 浏览器自动化 | WebView2 CoreWebView2 API + JavaScript 注入 |
 | 任务管理 | 自建 TaskStateMachine（Planning → Executing → Complete） |
-| 自检测机制 | AgentEventSelfHandler（死胡同检测 + 自动阻断） |
+| 自检测机制 | AgentEventSelfHandler（过期元素、重复导航、无进展循环、页面停滞、连续失败、探索限制 + 自动阻断） |
 | 日志 | 自研 Logger（控制台 + 文件 + 内存缓存 + TraceBlock） |
 | 数据持久化 | JSON 文件（书签 / 历史 / 会话 / 模型配置） |
 
@@ -168,6 +172,12 @@ Demo/BrowserDemo/
 │   │   ├── JsonRpcClient.cs
 │   │   └── PlaywrightMcpClient.cs
 │   └── Skills/                          # 旧 MCP 技能系统（当前默认不初始化）
+├── BrowserSkills/                     # 独立提取的浏览器自动化技能库（net8.0-windows Class Library）
+│   ├── Core/                          # 自动化引擎 + 工具路由器 + JS 脚本 + 日志接口
+│   ├── Models/                        # 对话消息、工具定义、任务清单、回复解析
+│   ├── Skills/                        # 原子/组合/策略技能定义与注册
+│   ├── Strategy/                      # 导航/定位/重试/上下文/恢复/隐私策略
+│   └── Intelligence/                  # 上下文构建、任务状态机、自检测
 └── Tools/
     ├── playwright-mcp/                  # 旧 Playwright MCP 服务器（不依赖）
     └── platform-tools/                  # Android ADB 工具
@@ -200,7 +210,7 @@ MainWindow.OnLoaded（核心初始化）
   ├─ 为已有标签页创建并绑定 WebView2
   ├─ 激活当前激活标签
   └─ ChatViewModel.AttachAutomationRouter(BrowserAutomationToolRouter)
-      ├─ 注册 17 个 browser_* 工具
+      ├─ 注册 18 个 browser_* 工具
       ├─ 注册 observe_browser（一次性结构化快照）
       ├─ 注册 ask_user（暂停/恢复人工确认）
       ├─ 注册 set_task_iterations（调整工具循环阈值）
@@ -292,12 +302,14 @@ AI 调用浏览器操作的底层执行层：
 - **硬上限**：最多 80 轮迭代，超出强制终止
 - **工具结果截断**：超过 2000 字符自动截断（保留首 2000 + 尾 500）
 - **上下文压缩**：50KB 触发压缩至 40KB，子任务完成时压缩至 30KB
+- **预算渐进警告**：50%/75%/90%/95% 消耗点注入 `[agent_event code=budget_warning]` 提醒
 - **子任务门禁**：有未完成子任务时 AI 输出纯文本 → 回传提醒；连续 5 次不执行工具 → 终止
 - **规划门禁**：基于 TaskStateMachine 状态强制要求 `update_todo` / `start_subtask`
 - **AI 复读检测**：连续 2 轮返回指纹相同的文本（>30 字符）→ 终止
 - **browser_js null 诊断**：连续 2 次 JS 查询返回 null → 注入策略变更提示
 - **set_task_iterations**：设置软提醒阈值（1-80），接近阈值时注入效率提示
 - **上下文压缩**：40 轮 / 40 消息兜底
+- **工具参数校验**：`SanitizeToolArguments()` 确保流式响应的不完整 JSON 参数不污染对话历史
 
 ### ask_user 暂停/恢复机制
 
@@ -364,10 +376,38 @@ AI 调用 ask_user(question, options?)
 - `repeat_same_action` → 动作重复，换策略
 - `no_progress_observe_wait_loop` → 观察无进展，点击明确入口
 - `js_null_hint` → JS 查询连续返回空，换查询逻辑
+- `page_stalled_fatal` → 页面内容连续 4 次未变化，死胡同终止
+- `replan_critical` → 连续 3+ 步操作失败，需调用 `update_todo` 重新规划
+- `exploration_limit` → 连续 5 步未关联子任务，需制定明确计划
+- `budget_warning` → 预算消耗警告（非终止），50%/75%/90%/95% 四档提醒
 
 ### 看到 MCP 日志但功能无关
 
 MCP / Playwright / 外部 Chrome 是旧路径。当前默认浏览器控制来自 WebView2 自动化服务。
+
+---
+
+## BrowserSkills 独立库
+
+`BrowserSkills/` 是从 Demo 项目中提取的独立 C# Class Library（`net8.0-windows`），依赖仅 `Microsoft.Web.WebView2`。
+
+**包含模块**：
+
+| 模块 | 内容 |
+|------|------|
+| `Core` | 浏览器自动化引擎、AI 工具路由器、JS 脚本、日志接口 |
+| `Models` | 对话消息、工具定义、任务清单、回复解析器 |
+| `Skills` | 原子/组合/策略技能定义与注册中心 |
+| `Strategy` | 导航、定位、重试、上下文、恢复、隐私 6 种策略 |
+| `Intelligence` | 上下文构建、任务状态机、自检测器 |
+
+**构建**：
+
+```bash
+dotnet build BrowserSkills/BrowserSkills.csproj
+```
+
+> **注意**：BrowserSkills 是独立提取版本，Demo 项目当前保留自己的服务副本。修改 BrowserSkills 不会自动影响 Demo 项目。
 
 ---
 
@@ -395,6 +435,7 @@ MCP / Playwright / 外部 Chrome 是旧路径。当前默认浏览器控制来�
 | 自检测机制 | `AgentEventSelfHandler.cs` |
 | 任务状态机 | `TaskStateMachine.cs` |
 | UI 界面 | `Views/` 下的 XAML 文件 |
+| **独立库（BrowserSkills）** | 同步修改 `BrowserSkills/` 下对应文件 |
 
 ---
 
