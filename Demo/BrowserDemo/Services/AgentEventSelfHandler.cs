@@ -17,6 +17,20 @@ internal sealed class AgentEventSelfHandler
     private readonly List<ChatMessage> _pendingSystemEvents = new();
     private readonly HashSet<string> _pendingCodes = new(StringComparer.OrdinalIgnoreCase);
 
+    // DOM text hash 页面停滞检测
+    private string? _previousDomTextHash;
+    private int _consecutiveDomUnchanged;
+    private const int MaxDomUnchangedBeforeAlert = 2;
+    private const int MaxDomUnchangedBeforeTerminate = 4;
+
+    // 连续失败计数（运行时 replan 触发器）
+    private int _consecutiveActionFailures;
+    private const int ReplanThreshold = 3;
+
+    // 探索限制跟踪
+    private int _consecutiveExplorationSteps;
+    private const int ExplorationLimit = 5;
+
     private int _noProgressCycles;
     private int _ignoredAskUserRecommendations;
     private int _deadEndScore;
@@ -108,6 +122,82 @@ internal sealed class AgentEventSelfHandler
         TrackStaleElement(toolName, args, resultInfo);
         TrackNavigationFailure(toolName, args, resultInfo);
         TrackNoProgressCycle(toolName, resultInfo);
+    }
+
+    /// <summary>
+    /// 记录 snapshot 返回的 DOM text hash，用于页面停滞检测。
+    /// 由 AiClient.ExecuteConversationAsync 在 browser_snapshot/observe_browser 后调用。
+    /// </summary>
+    public void RecordDomTextHash(string domTextHash)
+    {
+        if (string.IsNullOrEmpty(domTextHash) || domTextHash == "0" || domTextHash.StartsWith("error"))
+            return;
+
+        if (_previousDomTextHash != null && _previousDomTextHash == domTextHash)
+        {
+            _consecutiveDomUnchanged++;
+
+            if (_consecutiveDomUnchanged == MaxDomUnchangedBeforeAlert)
+            {
+                AddEvent("page_stalled", "warning",
+                    $"页面内容连续 {MaxDomUnchangedBeforeAlert} 次未变化（hash={domTextHash}），当前操作可能无效。请尝试导航到新页面或更换操作策略。");
+            }
+            else if (_consecutiveDomUnchanged >= MaxDomUnchangedBeforeTerminate)
+            {
+                _terminateMessage = $"页面内容已连续 {MaxDomUnchangedBeforeTerminate} 次未变化，工具循环判定为死胡同，强制终止。";
+                AddEvent("page_stalled_fatal", "critical",
+                    $"[agent_event code=page_stalled_fatal severity=critical] 页面内容已连续 {MaxDomUnchangedBeforeTerminate} 次未变化（hash={domTextHash}），工具循环判定为死胡同，强制终止。");
+            }
+        }
+        else
+        {
+            _consecutiveDomUnchanged = 0;
+        }
+
+        _previousDomTextHash = domTextHash;
+    }
+
+    /// <summary>记录工具执行的成功/失败结果，用于连续失败 replan 检测。</summary>
+    public void RecordActionOutcome(bool isSuccess)
+    {
+        if (!isSuccess)
+        {
+            _consecutiveActionFailures++;
+
+            if (_consecutiveActionFailures == ReplanThreshold)
+            {
+                AddEvent("replan_needed", "warning",
+                    $"已连续 {ReplanThreshold} 步操作失败或无进展。请调用 update_todo 重新规划子任务，调整执行策略。");
+            }
+            else if (_consecutiveActionFailures > ReplanThreshold)
+            {
+                AddEvent("replan_critical", "critical",
+                    $"已连续 {_consecutiveActionFailures} 步失败，必须重新规划。");
+            }
+        }
+        else
+        {
+            _consecutiveActionFailures = 0;
+        }
+    }
+
+    /// <summary>记录每一步是否关联了 active subtask，连续游离则提醒。</summary>
+    public void RecordStepWithSubtask(bool hasSubtaskAssociation)
+    {
+        if (!hasSubtaskAssociation)
+        {
+            _consecutiveExplorationSteps++;
+
+            if (_consecutiveExplorationSteps == ExplorationLimit)
+            {
+                AddEvent("exploration_limit", "warning",
+                    $"已连续 {ExplorationLimit} 步操作未关联任何子任务。请调用 update_todo 制定明确计划，或调用 finish_subtask 完成任务。");
+            }
+        }
+        else
+        {
+            _consecutiveExplorationSteps = 0;
+        }
     }
 
     public IEnumerable<ChatMessage> DrainPendingSystemEvents()

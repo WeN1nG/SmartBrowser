@@ -11,6 +11,9 @@ public class BrowserAutomationToolRouter
 {
     private readonly BrowserAutomationService _automation;
 
+    /// <summary>内部自动化服务引用（供外部注入 AiClient）</summary>
+    public BrowserAutomationService Automation => _automation;
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
@@ -44,7 +47,7 @@ public class BrowserAutomationToolRouter
         Tool("browser_forward", "[浏览器] 前进到浏览器历史中的下一页。"),
         Tool("browser_reload", "[浏览器] 刷新当前页面。"),
 
-        Tool("browser_snapshot", "[浏览器] 获取当前页面的结构化快照。返回的 elements[*].id 是后续 browser_click/browser_type/browser_hover/browser_select_option 的 element_id。不要使用 xp= hash 或 CSS 选择器定位。"),
+        Tool("browser_snapshot", "[浏览器] 获取当前页面的结构化快照。返回的 elements[*].id 是后续 browser_click/browser_type/browser_hover/browser_select_option 的 element_id。不要使用 xp= hash 或 CSS 选择器定位。新字段：paint_order=zIndex 数值（0=auto），overlapped=true 表示可能被高 z-index 元素遮挡，AI 应优先选择 overlapped=false 的元素；select 元素携带 inline_options 列出选项；date/range/color input 携带格式提示；sensitive=true 表示该元素包含敏感数据（value 已脱敏）；viewport_center={x,y} 提供元素中心坐标用于点击兜底；toast/modal/loading 等动态覆盖层元素已被自动过滤。"),
 
         Tool("browser_click", "[浏览器] 点击页面元素。必须先调用 browser_snapshot，并使用快照中元素的整数 id 作为 element_id。", new()
         {
@@ -74,6 +77,17 @@ public class BrowserAutomationToolRouter
             ["delta_x"] = IntParam("横向滚动像素，默认 0"),
             ["delta_y"] = IntParam("纵向滚动像素，默认 300")
         }),
+
+        Tool("browser_scroll_to_element", "[浏览器] 滚动页面使指定元素出现在视口中心。必须先调用 browser_snapshot，并使用快照中元素的整数 id。", new()
+        {
+            ["element_id"] = IntParam("browser_snapshot 返回的 elements[*].id 整数")
+        }, "element_id"),
+
+        Tool("browser_click_at", "[浏览器] 在视口绝对坐标 (x, y) 处点击。仅在 element_id / stable_hash 均失效时使用；优先从 snapshot 的 viewport_center 获取坐标。", new()
+        {
+            ["x"] = IntParam("视口 X 坐标（像素）"),
+            ["y"] = IntParam("视口 Y 坐标（像素）")
+        }, "x", "y"),
 
         Tool("browser_press_key", $"[浏览器] 向当前页面发送特殊按键。支持: {string.Join(", ", SupportedKeys)}。输入普通文本请用 browser_type。", new()
         {
@@ -119,7 +133,12 @@ public class BrowserAutomationToolRouter
         Tool("browser_switch_tab", "[浏览器] 切换自动化目标标签页。tab_id 必须是应用内部标签 Guid；通常不需要主动调用。", new()
         {
             ["tab_id"] = StringParam("目标标签页 Guid")
-        }, "tab_id")
+        }, "tab_id"),
+
+        Tool("browser_click_by_hash", "[浏览器] 使用元素的 stable_hash 进行点击。当 element_id 失效时使用此工具。stable_hash 基于元素的 tag、aria-label、name、placeholder、text 计算，页面刷新后仍然有效。", new()
+        {
+            ["stable_hash"] = StringParam("元素的稳定哈希值（来自 snapshot elements[*].stable_hash）")
+        }, "stable_hash")
     };
 
     public async Task<string> InvokeAsync(string toolName, Dictionary<string, object?>? args)
@@ -148,6 +167,8 @@ public class BrowserAutomationToolRouter
                 "browser_scroll" => Format(await _automation.ScrollAsync(
                     GetInt(args, "delta_x") ?? 0, GetInt(args, "delta_y") ?? 300)),
 
+                "browser_scroll_to_element" => Format(await _automation.ScrollToElementAsync(RequiredElementId(args))),
+
                 "browser_press_key" => Format(await _automation.PressKeyAsync(RequiredString(args, "key"))),
                 "browser_screenshot" => await ScreenshotWithReasonAsync(RequiredString(args, "reason")),
                 "browser_js" => Format(await _automation.EvaluateJavaScriptAsync(RequiredString(args, "script"))),
@@ -156,6 +177,10 @@ public class BrowserAutomationToolRouter
                     RequiredString(args, "text"), GetInt(args, "timeout_ms") ?? 10_000)),
                 "browser_fill_form" => Format(await _automation.FillFormAsync(RequiredStringDictionary(args, "fields"))),
                 "browser_switch_tab" => SwitchTab(RequiredString(args, "tab_id")),
+                "browser_click_by_hash" => Format(await _automation.ClickByStableHashAsync(RequiredString(args, "stable_hash"))),
+                "browser_click_at" => Format(await _automation.ClickAtAsync(
+                    GetInt(args, "x") ?? throw new ArgumentException("缺少必需参数: x"),
+                    GetInt(args, "y") ?? throw new ArgumentException("缺少必需参数: y"))),
 
                 _ => Error($"工具 '{toolName}' 未注册")
             };

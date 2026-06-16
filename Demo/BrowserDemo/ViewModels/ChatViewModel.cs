@@ -222,6 +222,10 @@ public class ChatViewModel : INotifyPropertyChanged
         // 连接状态机到 ContextBuilder，使规划门禁和上下文压缩能够正确工作
         _contextBuilder.TaskStateMachine = _taskStateMachine;
 
+        // 连接自动化服务到 AiClient，启用 DOM hash 检测
+        if (_aiClient is Services.AiClient aiClient)
+            aiClient.AutomationService = router.Automation;
+
         Logger.Info($"[Automation] WebView2 工具路由器已挂载: {router.GetToolDefinitions().Count} 个浏览器工具，总工具数 {_contextBuilder.RegisteredTools.Count}");
     }
 
@@ -1292,8 +1296,30 @@ public class ChatViewModel : INotifyPropertyChanged
                 // 使用可变的 List 以支持 ExecuteConversationAsync 的内部追加；过滤 ask_user UI 提示卡片
                 var mutableMessages = BuildApiConversationMessages();
 
+                // ★★★ 前置恢复检测：如果状态机处于 Executing 但有 error 消息，注入进度提示 ★★★
+                if (_taskStateMachine.CurrentState == TaskState.Executing)
+                {
+                    var lastUserMsg = mutableMessages.LastOrDefault(m => m.Role == MessageRole.User);
+                    var hasErrorInHistory = mutableMessages.Any(m =>
+                        m.Role == MessageRole.Assistant &&
+                        (m.Content?.Contains("超时", StringComparison.OrdinalIgnoreCase) == true ||
+                         m.Content?.Contains("服务器响应超时", StringComparison.OrdinalIgnoreCase) == true));
+                    var isResume = lastUserMsg?.Content?.Trim() == "继续";
+
+                    if (hasErrorInHistory || isResume)
+                    {
+                        var activeItem = _taskStateMachine.TodoItems.FirstOrDefault(t => t.Id == _taskStateMachine.ActiveSubtaskId);
+                        if (activeItem != null)
+                        {
+                            var recoveryMsg = $"[系统提示] 当前任务清单状态：已完成子任务已完成（见下方 todo 列表）。当前正在执行子任务「{activeItem.Title}」(ID={_taskStateMachine.ActiveSubtaskId})。请继续完成此子任务，完成后调用 finish_subtask(status=\"completed\")。";
+                            AddSystemMessage(recoveryMsg);
+                            mutableMessages = BuildApiConversationMessages();
+                            Logger.Info($"前置恢复提示：当前子任务={activeItem.Title} (ID={_taskStateMachine.ActiveSubtaskId})");
+                        }
+                    }
+                }
                 // 前置检测：如果任务清单尚未建立，注入系统提示要求 AI 先调用 update_todo
-                if (_taskStateMachine.CurrentState == TaskState.Planning)
+                else if (_taskStateMachine.CurrentState == TaskState.Planning)
                 {
                     AddSystemMessage(
                         "如果你正在执行一个多步骤任务，请先调用 `update_todo` 创建完整的任务清单，" +
@@ -1373,6 +1399,9 @@ public class ChatViewModel : INotifyPropertyChanged
                 {
                     FinalizeAssistantMessage(aiMsg);
                 }
+                // ★★★ 中断恢复：工具循环结束后，检测并修复状态机不一致 ★★★
+                RecoverFromInterruption(mutableMessages, aiMsg.Content);
+
                 // 后置兜底检测：工具循环正常结束后，如果 AI 仍未建立任务清单，追加提醒
                 if (_taskStateMachine.CurrentState == TaskState.Planning)
                 {
@@ -1778,6 +1807,184 @@ public class ChatViewModel : INotifyPropertyChanged
             return "任务未完成，等待继续…";
 
         return "就绪";
+    }
+
+    /// <summary>
+    /// 工具循环结束后检测状态机一致性，并在中断后自动恢复。
+    /// 扫描对话历史中的 start_subtask / finish_subtask 工具证据，
+    /// 将状态机对齐到真实进度。
+    /// </summary>
+    private void RecoverFromInterruption(List<ChatMessage> conversation, string aiFinalText)
+    {
+        if (_taskStateMachine.CurrentState == TaskState.Planning)
+            return; // Planning 状态不需要恢复
+
+        // 从对话中提取子任务证据
+        var completedIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var blockedIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var startedIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var msg in conversation)
+        {
+            if (msg.Role != MessageRole.Tool) continue;
+            var content = msg.Content ?? "";
+
+            if (msg.ToolName == "finish_subtask")
+            {
+                if (content.Contains("子任务完成", StringComparison.OrdinalIgnoreCase) ||
+                    content.Contains("✅", StringComparison.OrdinalIgnoreCase))
+                {
+                    // 尝试从工具结果中提取 ID
+                    var idMatch = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object?>>(
+                        ExtractJsonFromContent(content));
+                    if (idMatch?.TryGetValue("id", out var idVal) == true)
+                        completedIds.Add(idVal?.ToString() ?? "");
+                }
+                else if (content.Contains("子任务受阻", StringComparison.OrdinalIgnoreCase) ||
+                         content.Contains("❌", StringComparison.OrdinalIgnoreCase) &&
+                         content.Contains("blocked", StringComparison.OrdinalIgnoreCase))
+                {
+                    var idMatch = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object?>>(
+                        ExtractJsonFromContent(content));
+                    if (idMatch?.TryGetValue("id", out var idVal) == true)
+                        blockedIds.Add(idVal?.ToString() ?? "");
+                }
+            }
+            else if (msg.ToolName == "start_subtask")
+            {
+                var idMatch = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object?>>(
+                    ExtractJsonFromContent(content));
+                if (idMatch?.TryGetValue("id", out var idVal) == true)
+                    startedIds.Add(idVal?.ToString() ?? "");
+            }
+        }
+
+        // 更可靠的方式：从 assistant 消息中的 tool_calls 提取
+        foreach (var msg in conversation)
+        {
+            if (msg.Role != MessageRole.Assistant || !msg.HasToolCalls) continue;
+            foreach (var tc in msg.ToolCalls!)
+            {
+                if (tc.FunctionName == "finish_subtask")
+                {
+                    try
+                    {
+                        var args = tc.ParseArguments();
+                        if (args?.TryGetValue("id", out var idObj) == true)
+                        {
+                            var idStr = idObj?.ToString() ?? "";
+                            var statusStr = (args.TryGetValue("status", out var sObj) ? sObj?.ToString() ?? "" : "")
+                                .ToLowerInvariant();
+                            if (statusStr.Contains("completed"))
+                                completedIds.Add(idStr);
+                            else if (statusStr.Contains("blocked"))
+                                blockedIds.Add(idStr);
+                        }
+                    }
+                    catch { }
+                }
+                else if (tc.FunctionName == "start_subtask")
+                {
+                    try
+                    {
+                        var args = tc.ParseArguments();
+                        if (args?.TryGetValue("id", out var idObj) == true)
+                            startedIds.Add(idObj?.ToString() ?? "");
+                    }
+                    catch { }
+                }
+            }
+        }
+
+        // 过滤空 ID
+        completedIds.Remove("");
+        blockedIds.Remove("");
+        startedIds.Remove("");
+
+        if (completedIds.Count == 0 && blockedIds.Count == 0 && startedIds.Count == 0)
+            return;
+
+        Logger.Info($"状态机恢复检测: completed={{{string.Join(",", completedIds)}}}, blocked={{{string.Join(",", blockedIds)}}}, started={{{string.Join(",", startedIds)}}}");
+
+        // 检查是否有 error 消息（说明是异常中断）
+        var hasError = aiFinalText.Contains("超时", StringComparison.OrdinalIgnoreCase)
+                    || aiFinalText.Contains("error", StringComparison.OrdinalIgnoreCase)
+                    || aiFinalText.Contains("失败", StringComparison.OrdinalIgnoreCase);
+
+        // 检查状态机是否不一致
+        var isInconsistent = false;
+
+        if (_taskStateMachine.CurrentState == TaskState.Complete && completedIds.Count < startedIds.Count)
+        {
+            // 状态机认为全部完成，但对话中启动的子任务比完成的更多 → 说明有子任务被跳过了
+            isInconsistent = true;
+        }
+
+        if (_taskStateMachine.CurrentState == TaskState.Executing && hasError)
+        {
+            // 正在执行但发生了错误 → 状态可能已损坏
+            isInconsistent = true;
+        }
+
+        if (isInconsistent || _taskStateMachine.AllTasksBlocked)
+        {
+            var recovered = _taskStateMachine.RecoverFromInterruption(
+                new HashSet<string>(completedIds, StringComparer.OrdinalIgnoreCase),
+                new HashSet<string>(blockedIds, StringComparer.OrdinalIgnoreCase));
+
+            if (recovered)
+            {
+                Logger.Info($"状态机已从对话历史恢复: 完成{{{string.Join(",", completedIds)}}}, 受阻{{{string.Join(",", blockedIds)}}}");
+
+                // 注入恢复提示，让 AI 知道当前进度
+                var recoveryHint = BuildRecoveryHint(completedIds, blockedIds, startedIds);
+                if (!string.IsNullOrEmpty(recoveryHint))
+                {
+                    AddSystemMessage(recoveryHint);
+                    Logger.Info($"已注入状态机恢复提示");
+                }
+            }
+        }
+    }
+
+    private static string ExtractJsonFromContent(string content)
+    {
+        if (string.IsNullOrWhiteSpace(content)) return "{}";
+        var start = content.IndexOf('{');
+        var end = content.LastIndexOf('}');
+        if (start >= 0 && end > start)
+            return content[start..(end + 1)];
+        return content;
+    }
+
+    private string? BuildRecoveryHint(HashSet<string> completedIds, HashSet<string> blockedIds, HashSet<string> startedIds)
+    {
+        var sb = new StringBuilder();
+
+        if (blockedIds.Count > 0 && _taskStateMachine.AllTasksBlocked)
+        {
+            sb.AppendLine("⚠️ 之前的任务执行因异常中断，所有子任务均被标记为受阻。你需要重新调用 update_todo 创建新的任务清单并开始执行。");
+            return sb.ToString();
+        }
+
+        if (_taskStateMachine.CurrentState == TaskState.Executing && !string.IsNullOrEmpty(_taskStateMachine.ActiveSubtaskId))
+        {
+            var activeItem = _taskStateMachine.TodoItems.FirstOrDefault(t => t.Id == _taskStateMachine.ActiveSubtaskId);
+            if (activeItem != null)
+            {
+                sb.AppendLine($"⚠️ 之前的任务执行被中断。已完成子任务: {{{string.Join(",", completedIds)}}}。");
+                sb.AppendLine($"当前正在执行子任务「{activeItem.Title}」(ID={_taskStateMachine.ActiveSubtaskId})。请继续完成此子任务。");
+                return sb.ToString();
+            }
+        }
+
+        if (_taskStateMachine.CurrentState == TaskState.Complete && completedIds.Count > 0)
+        {
+            sb.AppendLine($"所有子任务已完成（完成: {{{string.Join(",", completedIds)}}}）。任务已结束。");
+            return sb.ToString();
+        }
+
+        return null;
     }
 
     private static List<AiTodoItem> GetTodoItems(Dictionary<string, object?> args)

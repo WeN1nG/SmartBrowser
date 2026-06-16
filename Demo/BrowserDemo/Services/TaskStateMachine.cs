@@ -46,7 +46,21 @@ public class TaskStateMachine
     /// </summary>
     public TransitionResult ProcessTodoUpdate(IReadOnlyList<AiTodoItem> items)
     {
-        if (CurrentState != TaskState.Planning)
+        if (CurrentState == TaskState.Complete)
+        {
+            // 如果所有子任务都被 blocked，允许重新开始
+            if (AllTasksBlocked)
+            {
+                _items.Clear();
+                CurrentState = TaskState.Planning;
+            }
+            else
+            {
+                return TransitionResult.Rejected(
+                    "所有子任务已完成，不能新建任务清单。如需新任务请开启新对话。");
+            }
+        }
+        else if (CurrentState != TaskState.Planning)
         {
             return TransitionResult.Rejected(
                 CurrentState == TaskState.Complete
@@ -136,7 +150,20 @@ public class TaskStateMachine
     public TransitionResult ProcessFinishSubtask(string subtaskId, string status)
     {
         if (CurrentState != TaskState.Executing)
+        {
+            // Complete 状态下允许 finish_subtask 清理状态
+            if (CurrentState == TaskState.Complete)
+            {
+                // 查找对应的任务项并标记
+                var existing = _items.FirstOrDefault(t => t.Id == subtaskId);
+                if (existing != null && status == "completed")
+                {
+                    existing.Status = "completed";
+                    return TransitionResult.Accepted(_items);
+                }
+            }
             return TransitionResult.Rejected("当前没有正在执行的子任务。");
+        }
 
         if (string.IsNullOrEmpty(subtaskId))
             return TransitionResult.Rejected("finish_subtask 的 id 不能为空。");
@@ -182,6 +209,102 @@ public class TaskStateMachine
 
         return TransitionResult.AcceptedWithCompression(_items, compression);
     }
+
+    /// <summary>
+    /// 中断恢复：根据对话历史重建状态机内部状态。
+    /// 当 API 超时/中断导致工具循环异常结束时，状态机可能停留在不一致状态
+    /// （如 Executing 但子任务未完成，或 Complete 但子任务实际未全部完成）。
+    /// 此方法扫描已完成的工具证据，将状态机对齐到真实进度。
+    /// </summary>
+    /// <param name="completedSubtaskIds">已完成（completed）的子任务 ID 集合</param>
+    /// <param name="blockedSubtaskIds">受阻（blocked）的子任务 ID 集合</param>
+    /// <returns>true 表示状态已更新，false 表示无变化</returns>
+    public bool RecoverFromInterruption(IReadOnlySet<string> completedSubtaskIds, IReadOnlySet<string> blockedSubtaskIds)
+    {
+        // 情况1：当前是 Planning 或 Complete 但有已完成的子任务 —— 说明上一次执行中断了
+        // 需要重建状态
+        if (CurrentState == TaskState.Planning && (_items.Count == 0 || completedSubtaskIds.Count > 0))
+        {
+            // 无任务或有已完成任务，清空重建
+            if (_items.Count == 0)
+            {
+                return false; // 没有任务可恢复，交给 AI 重新 update_todo
+            }
+        }
+
+        if (_items.Count == 0)
+            return false;
+
+        var changed = false;
+
+        // 同步每个子任务的状态
+        foreach (var item in _items)
+        {
+            var wasCompleted = item.Status == "completed";
+            var wasBlocked = item.Status == "blocked";
+            var wasInProgress = item.Status == "in_progress";
+
+            if (completedSubtaskIds.Contains(item.Id))
+                item.Status = "completed";
+            else if (blockedSubtaskIds.Contains(item.Id))
+                item.Status = "blocked";
+
+            if (item.Status != "pending" && !wasCompleted && !wasBlocked)
+                changed = true;
+        }
+
+        // 记录恢复前的活跃子任务
+        var previousActiveId = ActiveSubtaskId;
+        var previousState = CurrentState;
+
+        // 确定当前应该处于哪个子任务
+        var allDone = _items.All(t => t.Status is "completed" or "blocked");
+
+        if (allDone)
+        {
+            // 所有子任务都有终态
+            if (CurrentState != TaskState.Complete)
+            {
+                CurrentState = TaskState.Complete;
+                ActiveSubtaskId = null;
+                changed = true;
+            }
+        }
+        else
+        {
+            // 还有未完成的子任务
+            CurrentState = TaskState.Executing;
+
+            // 找到第一个 pending 或 in_progress 的子任务作为当前活动
+            var nextItem = _items.FirstOrDefault(t => t.Status is "pending" or "in_progress");
+            if (nextItem != null)
+            {
+                if (nextItem.Status == "pending")
+                    nextItem.Status = "in_progress";
+                ActiveSubtaskId = nextItem.Id;
+                if (previousState != TaskState.Executing || previousActiveId != ActiveSubtaskId)
+                    changed = true;
+            }
+        }
+
+        return changed;
+    }
+
+    /// <summary>
+    /// 强制重置为 Planning 状态并清空任务清单。
+    /// 用于用户在 Complete 状态下要求重新开始任务。
+    /// </summary>
+    public void ForceRestart()
+    {
+        CurrentState = TaskState.Planning;
+        ActiveSubtaskId = null;
+        _items.Clear();
+    }
+
+    /// <summary>
+    /// 检查是否所有子任务均为 blocked 状态（表明任务因异常而卡死）
+    /// </summary>
+    public bool AllTasksBlocked => _items.Count > 0 && _items.All(t => t.Status == "blocked");
 
     private static string NormalizeTodoStatus(string? status) => status switch
     {

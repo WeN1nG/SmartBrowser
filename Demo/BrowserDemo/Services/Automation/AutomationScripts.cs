@@ -120,6 +120,42 @@ public static class AutomationScripts
                 return score;
             }
 
+            // ★ Session-specific exclude: 过滤动态注入的覆盖层元素（toast/modal/loading/dropdown）★
+            function isElementExcludedBySession(el) {
+                // data-session-exclude 属性显式排除
+                if (el.hasAttribute('data-session-exclude')) {
+                    return true;
+                }
+                // 常见覆盖层模式：通过 class/id 特征匹配
+                var cls = ((el.className || '') + '').toLowerCase();
+                var id = ((el.id || '') + '').toLowerCase();
+                var combined = cls + ' ' + id;
+                var overlayPatterns = [
+                    'toast', 'notification', 'modal', 'dialog', 'overlay',
+                    'loading', 'spinner', 'skeleton', 'backdrop', 'mask',
+                    'dropdown-menu', 'popover', 'tooltip', 'drawer', 'snackbar',
+                    'watermark', 'onboarding', 'guide', 'tips', 'float-btn',
+                    'cookie-bar', 'consent', 'banner'
+                ];
+                for (var i = 0; i < overlayPatterns.length; i++) {
+                    if (combined.indexOf(overlayPatterns[i]) !== -1) return true;
+                }
+                // 全屏覆盖层检测：宽高占满视口且非正常布局元素
+                try {
+                    var r = el.getBoundingClientRect();
+                    if (r.width > 800 && r.height > 600 && r.width >= window.innerWidth && r.height >= window.innerHeight) {
+                        // 可能是全屏遮罩/广告；检查是否有合理的 role 或 tag
+                        var tag = (el.tagName || '').toLowerCase();
+                        if (tag === 'div' || tag === 'section' || tag === 'main' || tag === 'article') {
+                            if (!el.getAttribute('role') && !el.getAttribute('aria-label') && !el.getAttribute('id')) {
+                                return true; // 无意义的空覆盖层
+                            }
+                        }
+                    }
+                } catch(e) {}
+                return false;
+            }
+
             // ★ 递归收集可交互元素（穿透 open Shadow DOM 与同源 iframe）★
             function collectInteractive(root, out) {
                 try {
@@ -128,6 +164,8 @@ public static class AutomationScripts
                         // Playwright 风格可见性 + 交互性过滤
                         if (isElementHiddenForAria(nodes[i])) continue;
                         if (!receivesPointerEvent(nodes[i])) continue;
+                        // Session-specific exclude: 过滤动态覆盖层
+                        if (isElementExcludedBySession(nodes[i])) continue;
                         out.push(nodes[i]);
                         if (MAX > 0 && out.length >= MAX) return;
                     }
@@ -188,14 +226,45 @@ public static class AutomationScripts
 
             // ★ 收集元素信息 — 精简字段，避免污染 LLM 上下文 ★
             // 保留：id/tag/text/type/name/aria_label/placeholder/value/href（AI 识别+操作必需）
+            // 新增：paint_order / overlapped（遮挡感知）/ inline_options（复合控件展开）/ format_hint / range_desc / color_desc / viewport_center
+            // 敏感数据脱敏：password/credit-card 等字段 value 被遮蔽
             // 移除：css_selector（已禁用 CSS 定位）、rect/visible（不依赖坐标）、
             //       checked/disabled/readonly（AI 不会操作不可用元素，冗余）
             function collectElementInfo(el, index) {
                 var tag = (el.tagName || '').toLowerCase();
                 var isInput = tag === 'input' || tag === 'textarea' || tag === 'select';
-                var t = el.type || null;
+                var t = (el.type || '').toLowerCase();
 
-                return {
+                // 缓存视口矩形（用于遮挡检测 + viewport_center 坐标兜底点击）
+                var _rect = null;
+                try { _rect = el.getBoundingClientRect(); } catch(e) {}
+
+                // 敏感数据脱敏
+                var rawValue = isInput && el.value != null ? (el.value + '') : '';
+                var maskedValue = rawValue;
+                var isSensitive = false;
+                if (rawValue.length > 0) {
+                    var nameAttr = ((el.getAttribute('name') || '') + '').toLowerCase();
+                    var ariaAttr = ((el.getAttribute('aria-label') || '') + '').toLowerCase();
+                    var combined = nameAttr + ' ' + ariaAttr + ' ' + t;
+                    if (t === 'password' || t === 'credit-card' ||
+                        combined.indexOf('password') !== -1 ||
+                        combined.indexOf('passwd') !== -1 ||
+                        combined.indexOf('pwd') !== -1 ||
+                        combined.indexOf('card') !== -1 ||
+                        combined.indexOf('credit') !== -1 ||
+                        combined.indexOf('ssn') !== -1 ||
+                        combined.indexOf('social') !== -1 ||
+                        combined.indexOf('secret') !== -1 ||
+                        combined.indexOf('token') !== -1 ||
+                        combined.indexOf('cvv') !== -1 ||
+                        combined.indexOf('pin') !== -1) {
+                        isSensitive = true;
+                        maskedValue = rawValue.length <= 2 ? '**' : rawValue[0] + '*'.repeat(rawValue.length - 1);
+                    }
+                }
+
+                var info = {
                     id: index,
                     tag: tag,
                     text: ((el.textContent || '') + '').trim().substring(0, 100),
@@ -205,8 +274,63 @@ public static class AutomationScripts
                     href: el.getAttribute ? (el.getAttribute('href') || null) : null,
                     aria_label: el.getAttribute ? (el.getAttribute('aria-label') || null) : null,
                     placeholder: el.getAttribute ? (el.getAttribute('placeholder') || null) : null,
-                    value: isInput && el.value != null ? (el.value + '').substring(0, 50) : null
+                    value: isInput ? (maskedValue.length > 0 && isSensitive ? '[REDACTED]' : maskedValue.substring(0, 50)) : null,
+                    sensitive: isSensitive,
+                    paint_order: 0,
+                    overlapped: false,
+                    stable_hash: '',
+                    viewport_center: null
                 };
+
+                // paint_order: zIndex 数值，auto 记为 0
+                try {
+                    var cs = el.getRootNode().getComputedStyle(el);
+                    info.paint_order = parseInt(cs.zIndex) || 0;
+                } catch(e) {}
+
+                // 缓存 _rect 供外部遮挡检测使用
+                if (_rect && _rect.width > 0 && _rect.height > 0) {
+                    info._rect = {
+                        top: _rect.top, left: _rect.left,
+                        bottom: _rect.bottom, right: _rect.right
+                    };
+                    // viewport_center: 元素中心点相对于视口的坐标（用于点击兜底）
+                    info.viewport_center = {
+                        x: Math.round(_rect.left + _rect.width / 2),
+                        y: Math.round(_rect.top + _rect.height / 2)
+                    };
+                }
+
+                // 复合控件内联展开
+                if (el.tagName === 'SELECT' && el.options && el.options.length > 0) {
+                    var labels = [];
+                    for (var oi = 0; oi < el.options.length; oi++) {
+                        var optText = (el.options[oi].text || '').trim();
+                        var optVal = (el.options[oi].value || '');
+                        labels.push(optText + '(' + optVal + ')');
+                    }
+                    info.inline_options = labels.join('  ');
+                }
+
+                if (el.tagName === 'INPUT') {
+                    var inputType = (el.type || '').toLowerCase();
+                    if (inputType === 'date') {
+                        info.format_hint = 'YYYY-MM-DD';
+                        if (el.min) info.min = el.min;
+                        if (el.max) info.max = el.max;
+                    }
+                    if (inputType === 'range') {
+                        info.range_desc = 'min=' + (el.min || '0') + ', max=' + (el.max || '100') + ', value=' + (el.value || '');
+                    }
+                    if (inputType === 'color') {
+                        info.color_desc = '当前: ' + (el.value || '#000000');
+                    }
+                }
+
+                // stable_hash: 基于 tag+aria-label+name+placeholder+text+type 的复合 hash
+                try { info.stable_hash = stableHash(el); } catch(e) {}
+
+                return info;
             }
 
             // ★ 通过 ID 在 document + open shadow root + 同源 iframe 中查找元素 ★
@@ -258,6 +382,33 @@ public static class AutomationScripts
                         try { info.push(collectElementInfo(elements[i], i)); }
                         catch (e) { /* 跳过损坏元素 */ }
                     }
+                    // ★ 遮挡检测：标记被高 z-index 元素覆盖的低 z-index 元素 ★
+                    (function() {
+                        function rectsOverlap(a, b) {
+                            return !(a.right <= b.left || a.left >= b.right ||
+                                     a.bottom <= b.top || a.top >= b.bottom);
+                        }
+                        for (var i = 0; i < info.length; i++) {
+                            if (info[i].overlapped) continue;
+                            if (info[i].paint_order === 0 || !info[i]._rect) continue;
+                            var ri = info[i]._rect;
+                            for (var j = 0; j < info.length; j++) {
+                                if (i === j) continue;
+                                if (!info[j]._rect || info[j].paint_order === 0) continue;
+                                var rj = info[j]._rect;
+                                if (rectsOverlap(ri, rj) && info[j].paint_order > info[i].paint_order) {
+                                    info[i].overlapped = true;
+                                    break;
+                                }
+                            }
+                        }
+                    })();
+
+                    // 清理内部字段 _rect（不暴露给 AI）
+                    for (var k = 0; k < info.length; k++) {
+                        delete info[k]._rect;
+                    }
+
                     return JSON.stringify({
                         url: location.href,
                         title: document.title,
@@ -267,8 +418,6 @@ public static class AutomationScripts
                         elements: info
                     });
                 },
-
-                // 点击：scrollIntoView → focus → mousedown/mouseup/click
                 clickElement: function(id) {
                     var el = findById(id);
                     if (!el) return JSON.stringify({ error: 'not_found', id: id });
@@ -298,25 +447,26 @@ public static class AutomationScripts
                     if (!el) return JSON.stringify({ error: 'not_found', id: id });
                     try { el.focus(); } catch (e) {}
                     var tag = el.tagName;
+                    var expectedFinal = null;
 
                     if (tag === 'INPUT' || tag === 'TEXTAREA') {
                         try {
                             var proto = (tag === 'INPUT' ? window.HTMLInputElement : window.HTMLTextAreaElement).prototype;
                             var desc = Object.getOwnPropertyDescriptor(proto, 'value');
                             var nativeSetter = desc && desc.set;
-                            var finalValue;
                             var selStart = el.selectionStart ?? el.value.length;
                             var selEnd = el.selectionEnd ?? el.value.length;
                             var curVal = el.value || '';
                             if (clearFirst) {
-                                finalValue = text;
+                                expectedFinal = text;
                             } else if (selStart === selEnd) {
                                 // 光标位置插入
-                                finalValue = curVal.substring(0, selStart) + text + curVal.substring(selEnd);
+                                expectedFinal = curVal.substring(0, selStart) + text + curVal.substring(selEnd);
                             } else {
                                 // 有选区则替换选区
-                                finalValue = curVal.substring(0, selStart) + text + curVal.substring(selEnd);
+                                expectedFinal = curVal.substring(0, selStart) + text + curVal.substring(selEnd);
                             }
+                            var finalValue = expectedFinal;
                             if (nativeSetter) {
                                 nativeSetter.call(el, finalValue);
                             } else {
@@ -333,16 +483,20 @@ public static class AutomationScripts
                     } else if (el.isContentEditable) {
                         try {
                             var cursorPos = el.selectionStart;
+                            var curText = (el.textContent || '');
                             if (cursorPos != null) {
+                                expectedFinal = curText.substring(0, cursorPos) + text + curText.substring(cursorPos);
                                 // 用 Range 在光标处插入
                                 var range = el.getRangeAt(0);
                                 range.setStart(el.childNodes[0] || el, cursorPos);
                                 range.setEnd(el.childNodes[0] || el, cursorPos);
                                 range.insertNode(document.createTextNode(text));
                             } else if (clearFirst) {
+                                expectedFinal = text;
                                 el.textContent = text;
                             } else {
-                                el.textContent = (el.textContent || '') + text;
+                                expectedFinal = curText + text;
+                                el.textContent = curText + text;
                             }
                             el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
                             el.dispatchEvent(new Event('change', { bubbles: true }));
@@ -352,9 +506,15 @@ public static class AutomationScripts
                     } else {
                         return JSON.stringify({ error: 'not_typeable', tag: tag });
                     }
+                    // 验证最终值：对比期望的最终值 vs 实际读取的值
+                    var actualVal = (tag === 'INPUT' || tag === 'TEXTAREA') ? (el.value || '') : (el.textContent || '');
+                    var mismatch = expectedFinal !== null && expectedFinal !== actualVal;
                     return JSON.stringify({
                         success: true, tag: tag,
-                        valuePreview: ((el.value || el.textContent || '') + '').substring(0, 60)
+                        valuePreview: actualVal.substring(0, 60),
+                        expected: text,
+                        actual: actualVal.substring(0, 50),
+                        mismatch: mismatch
                     });
                 },
 
@@ -438,9 +598,62 @@ public static class AutomationScripts
                     var el = findById(id);
                     if (!el) return JSON.stringify({ error: 'not_found', id: id });
                     return JSON.stringify({ success: true, selector: generateCssSelector(el) });
+                },
+
+                // 获取页面 DOM text hash（用于页面停滞检测）
+                getDomTextHash: function() {
+                    try {
+                        var body = document.body;
+                        if (!body) return '0';
+                        var walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT, {
+                            acceptNode: function(node) {
+                                var parent = node.parentElement;
+                                if (!parent) return NodeFilter.FILTER_REJECT;
+                                var tag = parent.tagName.toLowerCase();
+                                if (tag === 'script' || tag === 'style' || tag === 'noscript') return NodeFilter.FILTER_REJECT;
+                                var cs = parent.getComputedStyle();
+                                if (cs.display === 'none' || cs.visibility === 'hidden') return NodeFilter.FILTER_REJECT;
+                                return NodeFilter.FILTER_ACCEPT;
+                            }
+                        });
+                        var parts = [];
+                        var node;
+                        while (node = walker.nextNode()) {
+                            var t = node.textContent.trim();
+                            if (t.length > 0) parts.push(t);
+                        }
+                        var full = parts.join(' ');
+                        return djb2Hash(full);
+                    } catch(e) { return '0'; }
+                },
+
+                // 获取当前元素列表中某个 id 的 stable_hash
+                getStableHash: function(id) {
+                    var el = findById(id);
+                    if (!el) return JSON.stringify({ error: 'not_found', id: id });
+                    return stableHash(el);
                 }
             };
         })();
+
+        // ★ 工具函数（在 mainA11y 外部，供全局使用）★
+        function djb2Hash(str) {
+            var hash = 5381;
+            for (var i = 0; i < str.length; i++) { hash = ((hash << 5) + hash) + str.charCodeAt(i); }
+            return (hash >>> 0).toString(36);
+        }
+        function stableHash(el) {
+            var parts = [
+                el.tagName.toLowerCase(),
+                el.getAttribute('aria-label') || '',
+                el.getAttribute('name') || '',
+                el.getAttribute('placeholder') || '',
+                (el.textContent || '').trim().substring(0, 50),
+                el.getAttribute('type') || ''
+            ];
+            var key = parts.filter(function(p) { return p.length > 0; }).join('|');
+            return djb2Hash(key);
+        }
         """;
 
     // ====================================================================

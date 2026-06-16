@@ -108,7 +108,13 @@ public partial class AiChatPanel : UserControl
 
     private void InputBox_KeyDown(object sender, KeyEventArgs e)
     {
-        if (e.Key == Key.Enter && !e.KeyboardDevice.IsKeyDown(Key.LeftShift) && !e.KeyboardDevice.IsKeyDown(Key.RightShift))
+        if (e.Key == Key.Enter && e.KeyboardDevice.IsKeyDown(Key.LeftShift) || e.KeyboardDevice.IsKeyDown(Key.RightShift))
+        {
+            // Shift+Enter → 允许换行，不拦截
+            return;
+        }
+
+        if (e.Key == Key.Enter)
         {
             _vm?.SendCommand.Execute(null);
             e.Handled = true;

@@ -99,6 +99,9 @@ public class AiClient : IAiClient, IDisposable
     /// <summary>上下文构建器——注入系统提示词、工具定义和动态上下文</summary>
     public ContextBuilder ContextBuilder { get; set; } = new();
 
+    /// <summary>浏览器自动化服务引用（可选，用于 DOM hash 等高级功能）</summary>
+    public Services.Automation.BrowserAutomationService? AutomationService { get; set; }
+
     public AiClient()
     {
         _http = new HttpClient { Timeout = TimeSpan.FromSeconds(120) };
@@ -687,6 +690,33 @@ public class AiClient : IAiClient, IDisposable
 
             Logger.Info($"工具循环 迭代 #{iteration + 1}, 消息数={messages.Count}");
 
+            // ★★★ Budget 渐进警告：在 50%/75%/90% 消耗点注入提醒 ★★★
+            if (iteration > 0 && iteration % 10 == 0)
+            {
+                var pct = iteration * 100 / MaxHardIterations;
+                if (pct == 50 || pct == 75 || pct == 90 || pct == 95)
+                {
+                    var budgetWarning = pct switch
+                    {
+                        50 => "已使用 50% 预算（40/80），请检查当前进度，确保关键步骤已完成。",
+                        75 => "已使用 75% 预算（60/80），建议开始整合结果，准备完成任务。",
+                        90 => "仅剩 10% 预算（8/80），请立即总结当前进展并完成剩余操作。",
+                        95 => "仅剩 5% 预算（4/80），必须在最后几步内完成任务或调用 finish_subtask。",
+                        _ => ""
+                    };
+                    if (!string.IsNullOrEmpty(budgetWarning))
+                    {
+                        messages.Add(new ChatMessage
+                        {
+                            Role = MessageRole.System,
+                            Content = $"[agent_event code=budget_warning severity=info] {budgetWarning}",
+                            Timestamp = DateTime.Now
+                        });
+                        Logger.Info($"Budget 警告: {pct}% ({iteration}/{MaxHardIterations})");
+                    }
+                }
+            }
+
             // ★★★ 上下文压缩：超过阈值时立即压缩到目标值以下 ★★★
             var contextBytes = EstimateConversationBytes(messages);
             if (contextBytes > ContextCompressionTriggerBytes)
@@ -1040,6 +1070,34 @@ public class AiClient : IAiClient, IDisposable
                         Timestamp = DateTime.Now
                     });
                     eventHandler.AfterToolExecution(tc.FunctionName, args, toolResult);
+
+                    // DOM text hash 页面停滞检测：snapshot 类工具执行后记录 hash
+                    if (tc.FunctionName is "browser_snapshot" or "observe_browser")
+                    {
+                        try
+                        {
+                            var hashResult = await AutomationService!.GetDomTextHashAsync();
+                            if (hashResult.IsSuccess && hashResult.Data != null)
+                            {
+                                var hash = hashResult.Data.Replace("dom_text_hash=", "").Trim();
+                                eventHandler.RecordDomTextHash(hash);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Logger.Debug($"DOM text hash 记录失败: {ex.Message}");
+                        }
+                    }
+
+                    // 连续失败检测：用于 replan 触发
+                    var actionOk = !string.IsNullOrEmpty(toolResult) &&
+                                   !toolResult.Contains("error", StringComparison.OrdinalIgnoreCase) &&
+                                   !toolResult.Contains("失败", StringComparison.OrdinalIgnoreCase);
+                    eventHandler.RecordActionOutcome(actionOk);
+
+                    // 探索限制检测：当前是否有 active subtask
+                    var hasSubtaskAssociation = ContextBuilder.TaskStateMachine?.ActiveSubtaskId != null;
+                    eventHandler.RecordStepWithSubtask(hasSubtaskAssociation);
 
                     // 重复探测检测：同工具返回同内容时提醒 AI
                     if (tc.FunctionName == "skill_extract" && toolResult.Length > 20)

@@ -51,11 +51,24 @@ public class BrowserAutomationService : IDisposable
         "browser_snapshot", "browser_click", "browser_type", "browser_hover",
         "browser_select_option", "browser_scroll", "browser_press_key",
         "browser_screenshot", "browser_js", "browser_wait",
-        "browser_wait_for", "browser_fill_form", "browser_switch_tab"
+        "browser_wait_for", "browser_fill_form", "browser_switch_tab",
+        "browser_click_by_hash"
     };
 
     /// <summary>工具是否已注册（O(1) 查询）</summary>
     public bool IsToolRegistered(string toolName) => RegisteredToolNames.Contains(toolName);
+
+    /// <summary>已注册工具名称集合（含稳定 hash 点击等）</summary>
+    public static IReadOnlySet<string> AllToolNames => new HashSet<string>
+    {
+        "browser_navigate", "browser_back", "browser_forward", "browser_reload",
+        "browser_snapshot", "browser_click", "browser_type", "browser_hover",
+        "browser_select_option", "browser_scroll", "browser_press_key",
+        "browser_screenshot", "browser_js", "browser_wait",
+        "browser_wait_for", "browser_fill_form", "browser_switch_tab",
+        "browser_click_by_hash", "browser_scroll_to_element", "browser_click_at",
+        "browser_get_dom_text_hash"
+    };
 
     // ============================================================
     // 初始化与 WebView2 绑定
@@ -276,6 +289,25 @@ public class BrowserAutomationService : IDisposable
     public Task<AutomationResult> GetSnapshotAsync()
         => InvokeJsCallAsync(AutomationScripts.GetSnapshotCall, "快照", returnRawJson: true);
 
+    /// <summary>获取当前页面 DOM text hash（用于页面停滞检测）</summary>
+    public Task<AutomationResult> GetDomTextHashAsync()
+        => RunOnUiThreadAsync(async wv =>
+        {
+            var sw = Stopwatch.StartNew();
+            try
+            {
+                var raw = await wv.CoreWebView2!.ExecuteScriptAsync("window.bermainA11y.getDomTextHash()");
+                sw.Stop();
+                var hash = StripQuotes(raw)?.Trim() ?? "0";
+                return AutomationResult.Success($"dom_text_hash={hash}", wv.CoreWebView2.Source)
+                    with { ElapsedMs = sw.ElapsedMilliseconds };
+            }
+            catch (Exception ex)
+            {
+                return AutomationResult.Fail($"获取 DOM text hash 失败: {ex.Message}", wv.CoreWebView2?.Source);
+            }
+        });
+
     /// <summary>截图，返回 base64 PNG</summary>
     public Task<AutomationResult> TakeScreenshotAsync() => RunOnUiThreadAsync(async wv =>
     {
@@ -431,6 +463,129 @@ public class BrowserAutomationService : IDisposable
             }
         });
     }
+
+    // ============================================================
+    // 高级定位：stable hash + 坐标 + 按元素滚动
+    // ============================================================
+
+    /// <summary>
+    /// 使用 stable_hash 查找并点击元素。
+    /// stable_hash 基于 tag+aria-label+name+placeholder+text+type 计算，页面刷新后仍然有效。
+    /// </summary>
+    public async Task<AutomationResult> ClickByStableHashAsync(string stableHash)
+    {
+        if (string.IsNullOrWhiteSpace(stableHash))
+            return AutomationResult.Fail("stableHash 参数为空");
+
+        return await RunOnUiThreadAsync(async wv =>
+        {
+            var sw = Stopwatch.StartNew();
+            try
+            {
+                var hashLit = EncodeJsString(stableHash);
+                var js =
+                    "(function(){" +
+                    "  function h(s){var h=5381;for(var i=0;i<s.length;i++){h=((h<<5)+h)+s.charCodeAt(i);}return(h>>>0).toString(36);}" +
+                    "  var els=document.querySelectorAll('*');" +
+                    "  var results=[];" +
+                    "  for(var i=0;i<els.length;i++){" +
+                    "    var el=els[i]," +
+                    "    tag=el.tagName.toLowerCase()," +
+                    "    al=(el.getAttribute('aria-label')||'').trim()," +
+                    "    nm=(el.getAttribute('name')||'').trim()," +
+                    "    ph=(el.getAttribute('placeholder')||'').trim()," +
+                    "    tx=(el.textContent||'').trim().substring(0,50)," +
+                    "    tp=(el.getAttribute('type')||'').toLowerCase()," +
+                    "    key=[tag,al,nm,ph,tx,tp].filter(Boolean).join('|');" +
+                    "    if(h(key)==='" + stableHash + "'){results.push(tag+(al?'#'+al:''));el.click();}" +
+                    "  }" +
+                    "  if(results.length>1) return JSON.stringify({ok:true,multiple_matches:results});" +
+                    "  return JSON.stringify({ok:true,matched:(results[0]||'unknown')});" +
+                    "})()";
+                var raw = await wv.CoreWebView2!.ExecuteScriptAsync(js);
+                sw.Stop();
+                var unwrapped = StripQuotes(raw) ?? "";
+                return AutomationResult.Success(unwrapped, wv.CoreWebView2.Source)
+                    with { ElapsedMs = sw.ElapsedMilliseconds };
+            }
+            catch (Exception ex)
+            {
+                return AutomationResult.Fail($"Stable hash 点击失败: {ex.Message}", wv.CoreWebView2?.Source);
+            }
+        });
+    }
+
+    /// <summary>滚动页面使指定元素出现在视口中</summary>
+    public Task<AutomationResult> ScrollToElementAsync(int elementId)
+        => RunOnUiThreadAsync(async wv =>
+        {
+            var sw = Stopwatch.StartNew();
+            try
+            {
+                var js =
+                    "(function(){" +
+                    "  var el=null;" +
+                    "  var all=document.querySelectorAll('*');" +
+                    "  for(var i=0;i<all.length;i++){" +
+                    "    if((all[i].dataset.bermainId||'')==='" + elementId + "'){el=all[i];break;}" +
+                    "  }" +
+                    "  if(!el) return JSON.stringify({error:'element_not_found'});" +
+                    "  el.scrollIntoView({behavior:'instant',block:'center',inline:'nearest'});" +
+                    "  return JSON.stringify({ok:true,tag:el.tagName.toLowerCase()});" +
+                    "})()";
+                var raw = await wv.CoreWebView2!.ExecuteScriptAsync(js);
+                sw.Stop();
+                var unwrapped = StripQuotes(raw) ?? "";
+                return AutomationResult.Success(unwrapped, wv.CoreWebView2.Source)
+                    with { ElapsedMs = sw.ElapsedMilliseconds };
+            }
+            catch (Exception ex)
+            {
+                return AutomationResult.Fail($"滚动到元素失败: {ex.Message}", wv.CoreWebView2?.Source);
+            }
+        });
+
+    /// <summary>在视口绝对坐标 (x, y) 处点击（元素定位失败时的兜底）</summary>
+    public Task<AutomationResult> ClickAtAsync(int x, int y)
+        => RunOnUiThreadAsync(async wv =>
+        {
+            try
+            {
+                var sw = Stopwatch.StartNew();
+                // 使用 CDP Input.dispatchMouseEvent 在绝对坐标处点击
+                var down = JsonSerializer.Serialize(new
+                {
+                    type = "mousePressed",
+                    buttons = "Left",
+                    x,
+                    y,
+                    clickCount = 1
+                });
+                var up = JsonSerializer.Serialize(new
+                {
+                    type = "mouseReleased",
+                    buttons = "Left",
+                    x,
+                    y,
+                    clickCount = 1
+                });
+                await wv.CoreWebView2!.CallDevToolsProtocolMethodAsync("Input.dispatchMouseEvent", down);
+                await wv.CoreWebView2!.CallDevToolsProtocolMethodAsync("Input.dispatchMouseEvent", up);
+                sw.Stop();
+                return AutomationResult.Success(
+                    $"在坐标 ({x}, {y}) 点击成功",
+                    wv.CoreWebView2.Source)
+                    with { ElapsedMs = sw.ElapsedMilliseconds };
+            }
+            catch (Exception ex)
+            {
+                return AutomationResult.Fail($"坐标点击失败: {ex.Message}", wv.CoreWebView2?.Source);
+            }
+        });
+
+    /// <summary>获取 DOM text hash</summary>
+    public Task<AutomationResult> GetDomTextHashAsyncDirect()
+        => GetDomTextHashAsync();
 
     // ============================================================
     // 弹窗设置

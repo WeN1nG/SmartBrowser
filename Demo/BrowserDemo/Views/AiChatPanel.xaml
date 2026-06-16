@@ -389,14 +389,14 @@
                     <!-- 输入框 -->
                     <Border Grid.Column="0" Background="#1A1A1E" CornerRadius="6"
                             BorderBrush="#3A3A3E" BorderThickness="1"
-                            Height="36" Margin="0,0,6,0">
+                            MinHeight="36" Margin="0,0,6,0">
                         <TextBox Text="{Binding InputText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                  Background="Transparent" BorderThickness="0"
                                  Foreground="#EEE" FontSize="12"
                                  Padding="10,0,10,0" VerticalAlignment="Center"
                                  FontFamily="Segoe UI"
                                  CaretBrush="White"
-                                 AcceptsReturn="False"
+                                 AcceptsReturn="True"
                                  x:Name="InputBox"
                                  KeyDown="InputBox_KeyDown"/>
                     </Border>
