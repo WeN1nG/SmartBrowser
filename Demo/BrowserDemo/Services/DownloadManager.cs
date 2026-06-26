@@ -10,6 +10,7 @@ public static class DownloadManager
 
     public static void Add(DownloadItem item)
     {
+        Logger.Debug($"[DownloadManager.Add] fileName={item.FileName}, uri={item.Uri}");
         RunOnUiThread(() => Items.Insert(0, item));
     }
 
@@ -20,6 +21,7 @@ public static class DownloadManager
 
     public static void ClearCompleted()
     {
+        Logger.Debug($"[DownloadManager.ClearCompleted] 当前下载数={Items.Count}");
         RunOnUiThread(() =>
         {
             for (var i = Items.Count - 1; i >= 0; i--)

@@ -35,6 +35,7 @@ public class TaskStateMachine
     /// <summary>重置状态机到初始状态</summary>
     public void Reset()
     {
+        Logger.Debug($"[Reset] 状态={CurrentState} → Planning, 清除 {_items.Count} 个任务项");
         CurrentState = TaskState.Planning;
         ActiveSubtaskId = null;
         _items.Clear();
@@ -46,6 +47,7 @@ public class TaskStateMachine
     /// </summary>
     public TransitionResult ProcessTodoUpdate(IReadOnlyList<AiTodoItem> items)
     {
+        Logger.Debug($"[ProcessTodoUpdate] 当前状态={CurrentState}, 接收 {items?.Count ?? 0} 个任务项");
         if (CurrentState == TaskState.Complete)
         {
             // 如果所有子任务都被 blocked，允许重新开始
@@ -106,16 +108,15 @@ public class TaskStateMachine
 
         CurrentState = TaskState.Executing;
         ActiveSubtaskId = _items[0].Id;
+        Logger.Debug($"[ProcessTodoUpdate] 状态→Executing, ActiveSubtaskId={ActiveSubtaskId}, 任务数={taskItems.Count}");
 
         return TransitionResult.Accepted(taskItems);
     }
-
-    /// <summary>
-    /// 处理 AI 的 start_subtask 调用。
     /// 仅允许对当前 ActiveSubtaskId 调用。
     /// </summary>
     public TransitionResult ProcessStartSubtask(string subtaskId)
     {
+        Logger.Debug($"[ProcessStartSubtask] subtaskId={subtaskId}, currentState={CurrentState}, active={ActiveSubtaskId}");
         if (CurrentState != TaskState.Executing)
             return TransitionResult.Rejected("尚未建立任务清单，请先调用 update_todo 创建完整子任务清单。");
 
@@ -139,16 +140,15 @@ public class TaskStateMachine
                 $"子任务「{target.Title}」已标记为 {target.Status}，不能重复开始。");
 
         target.Status = "in_progress";
+        Logger.Debug($"[ProcessStartSubtask] 子任务 {subtaskId} 已开始");
 
         return TransitionResult.AcceptedWithCompression(_items, CompressionLevel.Standard);
     }
-
-    /// <summary>
-    /// 处理 AI 的 finish_subtask 调用。
     /// 仅允许对当前 ActiveSubtaskId 调用，完成后自动启动下一个 pending 子任务。
     /// </summary>
     public TransitionResult ProcessFinishSubtask(string subtaskId, string status)
     {
+        Logger.Debug($"[ProcessFinishSubtask] subtaskId={subtaskId}, status={status}, currentState={CurrentState}");
         if (CurrentState != TaskState.Executing)
         {
             // Complete 状态下允许 finish_subtask 清理状态
@@ -207,11 +207,9 @@ public class TaskStateMachine
             ? CompressionLevel.Max
             : CompressionLevel.None;
 
+        Logger.Debug($"[ProcessFinishSubtask] 子任务 {subtaskId} 完成(status={status}), 新active={ActiveSubtaskId ?? "null"}, 状态={CurrentState}");
         return TransitionResult.AcceptedWithCompression(_items, compression);
     }
-
-    /// <summary>
-    /// 中断恢复：根据对话历史重建状态机内部状态。
     /// 当 API 超时/中断导致工具循环异常结束时，状态机可能停留在不一致状态
     /// （如 Executing 但子任务未完成，或 Complete 但子任务实际未全部完成）。
     /// 此方法扫描已完成的工具证据，将状态机对齐到真实进度。
@@ -221,6 +219,7 @@ public class TaskStateMachine
     /// <returns>true 表示状态已更新，false 表示无变化</returns>
     public bool RecoverFromInterruption(IReadOnlySet<string> completedSubtaskIds, IReadOnlySet<string> blockedSubtaskIds)
     {
+        Logger.Debug($"[RecoverFromInterruption] completed={string.Join(",", completedSubtaskIds)}, blocked={string.Join(",", blockedSubtaskIds)}, currentState={CurrentState}");
         // 情况1：当前是 Planning 或 Complete 但有已完成的子任务 —— 说明上一次执行中断了
         // 需要重建状态
         if (CurrentState == TaskState.Planning && (_items.Count == 0 || completedSubtaskIds.Count > 0))
@@ -287,6 +286,7 @@ public class TaskStateMachine
             }
         }
 
+        Logger.Debug($"[RecoverFromInterruption] 状态机已恢复, changed={changed}, newState={CurrentState}, active={ActiveSubtaskId}");
         return changed;
     }
 
@@ -296,6 +296,7 @@ public class TaskStateMachine
     /// </summary>
     public void ForceRestart()
     {
+        Logger.Debug($"[ForceRestart] 强制重置: currentState={CurrentState} → Planning");
         CurrentState = TaskState.Planning;
         ActiveSubtaskId = null;
         _items.Clear();

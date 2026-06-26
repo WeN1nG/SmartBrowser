@@ -51,7 +51,9 @@ public class ChatViewModel : INotifyPropertyChanged
     /// <summary>技能执行历史</summary>
     public ObservableCollection<SkillExecResult> SkillExecutionHistory { get; } = new();
 
-    /// <summary>推荐的技能（基于用户输入意图）</summary>
+    /// <summary>当前会话的聊天日志记录器</summary>
+    private ChatSessionLogger? _chatLogger;
+
     public ObservableCollection<SkillDef> RecommendedSkills { get; } = new();
 
     /// <summary>当前正在执行的技能</summary>
@@ -59,6 +61,8 @@ public class ChatViewModel : INotifyPropertyChanged
 
     /// <summary>工具调用重试追踪：toolName → (attemptCount, lastError)</summary>
     private readonly Dictionary<string, (int Count, string? LastError)> _toolRetryTracker = new();
+    /// <summary>保护 _toolRetryTracker 的线程锁（工具执行移到后台线程后需要）</summary>
+    private readonly object _toolRetryLock = new();
 
     /// <summary>防止主请求和 ask_user 续流并发操作同一组消息</summary>
     private readonly SemaphoreSlim _aiLoopGate = new(1, 1);
@@ -572,6 +576,7 @@ public class ChatViewModel : INotifyPropertyChanged
 
     public async void RespondToQuestionAsync(string userResponse)
     {
+        Logger.Debug($"[RespondToQuestionAsync] 用户回答长度={userResponse?.Length ?? 0}");
         if (!IsAwaitingUserInput || _pendingMessages == null || _pendingAiMsg == null)
         {
             Logger.Warning("RespondToQuestionAsync 被调用但不在暂停状态");
@@ -709,7 +714,7 @@ public class ChatViewModel : INotifyPropertyChanged
         try
         {
             await foreach (var chunk in _aiClient.ExecuteConversationAsync(
-                    messages, ExecuteAiToolAsync, ct: ct))
+                    messages, (name, args) => ExecuteAiToolAsync(name, args, ct), ct: ct))
             {
                 // __ASK_USER_PAUSED__: 不在这里设置状态，改为捕获后返回给调用方处理
                 // 避免被调用方（RespondToQuestionAsync）的 finally 块过早清空 _pending*
@@ -766,6 +771,10 @@ public class ChatViewModel : INotifyPropertyChanged
             Logger.Debug($"[Function] ChatViewModel::ContinueToolLoopAsync end — paused={pausedResult != null}");
         }
 
+        // ★★★ 记录 AI 续流回复 ★★★
+        if (_chatLogger != null)
+            _chatLogger.LogGet(aiMsg.Content.Substring(initialLength > 0 ? initialLength : 0));
+
         // 同步工具循环中自动追加的纯文本消息（过滤 Tool 和带 ToolCalls 的 Assistant）
         var resumedExistingIds = new HashSet<Guid>(Messages.Select(m => m.Id));
         foreach (var msg in messages)
@@ -782,20 +791,38 @@ public class ChatViewModel : INotifyPropertyChanged
     // ====== ExecuteAiToolAsync（修改——支持 ask_user） ======
 
     /// <summary>执行 AI 发起的工具调用</summary>
-    private async Task<string> ExecuteAiToolAsync(string toolName, Dictionary<string, object?>? args)
+    private async Task<string> ExecuteAiToolAsync(string toolName, Dictionary<string, object?>? args, CancellationToken ct = default)
     {
         Logger.Debug($"[Function] ChatViewModel::ExecuteAiToolAsync({toolName}) start");
         Logger.Info($"AI 工具调用: {toolName}");
 
-        // ★★★ 处理 observe_browser 工具：包装页面快照为 PageAgent 风格 browser_state ★★★
+        // ★★★ 处理 observe_browser 工具：获取快照并格式化为 PageAgent 风格 browser_state ★★★
         if (toolName == "observe_browser")
         {
             if (_automationRouter == null)
                 return "❌ observe_browser 不可用：浏览器自动化工具尚未初始化，请等待浏览器加载完成。";
 
             var maxElements = Math.Clamp(GetArg<int?>(args ?? new(), "max_elements") ?? 120, 1, 200);
-            var snapshot = await _automationRouter.InvokeAsync("browser_snapshot", new Dictionary<string, object?>());
-            return FormatBrowserObservation(snapshot, maxElements);
+
+            // 获取快照（保存到本地文件）
+            var conversationId = _currentConversationId ?? "default";
+            await Task.Run(() => _automationRouter.InvokeAsync("browser_snapshot",
+                new Dictionary<string, object?> { ["conversation_id"] = conversationId }), ct).ConfigureAwait(false);
+
+            // 从本地文件读取原始快照 JSON
+            var snapshotPath = _automationRouter.Automation.CurrentSnapshotPath;
+            string? snapshotJson = null;
+            if (!string.IsNullOrWhiteSpace(snapshotPath))
+            {
+                snapshotJson = _automationRouter.Automation.LoadSnapshotFromJson(snapshotPath);
+            }
+
+            if (string.IsNullOrWhiteSpace(snapshotJson))
+            {
+                return "⚠️ observe_browser 获取快照失败。请确保页面已加载完成，再调用 observe_browser。";
+            }
+
+            return FormatBrowserObservation(snapshotJson, maxElements);
         }
 
         // ★★★ 处理 ask_user 工具：暂停循环，等待用户回答 ★★★
@@ -983,9 +1010,17 @@ public class ChatViewModel : INotifyPropertyChanged
         // ★★★ WebView2 自动化工具（Phase 4b 主路径）★★★
         if (_automationRouter != null && _automationRouter.IsToolRegistered(toolName))
         {
-            var (attemptCount, _) = _toolRetryTracker.GetValueOrDefault(toolName);
-            attemptCount++;
-            _toolRetryTracker[toolName] = (attemptCount, null);
+            var currentThread = Environment.CurrentManagedThreadId;
+            var threadName = Thread.CurrentThread.Name ?? "N/A";
+            var isOnUiThread = _automationRouter.Automation.IsOnDispatcher;
+            Logger.Info($"[ThreadDiag] 工具 {toolName} 开始: 线程ID={currentThread}/{threadName}, 是否在UI线程={isOnUiThread}");
+            int attemptCount;
+            lock (_toolRetryLock)
+            {
+                (attemptCount, _) = _toolRetryTracker.GetValueOrDefault(toolName);
+                attemptCount++;
+                _toolRetryTracker[toolName] = (attemptCount, null);
+            }
 
             var retryDelay = attemptCount switch
             {
@@ -1006,19 +1041,32 @@ public class ChatViewModel : INotifyPropertyChanged
             if (attemptCount >= 3 && callArgs.ContainsKey("element_id"))
             {
                 Logger.Debug("[Automation] 元素 id 可能已过期，刷新页面快照");
-                var snapshot = await _automationRouter.InvokeAsync("browser_snapshot", new Dictionary<string, object?>());
-                return "⚠️ 工具执行前检测到 element_id 可能已过期。已刷新页面快照，请从下面的新快照中重新选择 elements[*].id 后再次调用工具，不要继续使用旧 id。\n\n" + snapshot;
+                var conversationId = _currentConversationId ?? "default";
+                await Task.Run(() => _automationRouter.InvokeAsync("browser_snapshot",
+                    new Dictionary<string, object?> { ["conversation_id"] = conversationId }), ct).ConfigureAwait(false);
+
+                // 从本地文件读取原始快照 JSON
+                var snapshotPath = _automationRouter.Automation.CurrentSnapshotPath;
+                string? snapshotJson = null;
+                if (!string.IsNullOrWhiteSpace(snapshotPath))
+                {
+                    snapshotJson = _automationRouter.Automation.LoadSnapshotFromJson(snapshotPath);
+                }
+
+                // 只返回快照摘要，避免将 100KB+ 的完整 JSON 注入对话上下文
+                var snapshotSummary = snapshotJson != null ? TruncateSnapshotSummary(snapshotJson) : "(快照文件读取失败，请重新调用 browser_snapshot)";
+                return "⚠️ 工具执行前检测到 element_id 可能已过期。已刷新页面快照，请从下面的新快照中重新选择 elements[*].id 后再次调用工具，不要继续使用旧 id。\n\n" + snapshotSummary;
             }
 
             try
             {
                 Logger.Info($"[Automation] 调用工具: {toolName} (尝试 #{attemptCount})");
-                var result = await _automationRouter.InvokeAsync(toolName, callArgs);
+                var result = await Task.Run(() => _automationRouter.InvokeAsync(toolName, callArgs), ct).ConfigureAwait(false);
                 Logger.Debug($"[Automation] {toolName} 返回: {result.Truncate(300)}");
 
                 if (result.Contains("\"ok\":false", StringComparison.OrdinalIgnoreCase))
                 {
-                    _toolRetryTracker[toolName] = (attemptCount, result);
+                    lock (_toolRetryLock) { _toolRetryTracker[toolName] = (attemptCount, result); }
                     if (attemptCount < 4)
                     {
                         var hint = attemptCount switch
@@ -1030,23 +1078,23 @@ public class ChatViewModel : INotifyPropertyChanged
                         return $"⚠️ 工具执行失败 (第{attemptCount}次): {result}\n建议: {hint}";
                     }
 
-                    _toolRetryTracker.Remove(toolName);
+                    lock (_toolRetryLock) { _toolRetryTracker.Remove(toolName); }
                     return $"❌ 工具执行失败 (已尝试{attemptCount}次): {result}\n" +
                            "已连续失败多次，请使用 ask_user 向用户描述已尝试的方法和现象，获取用户指引。";
                 }
 
-                _toolRetryTracker.Remove(toolName);
+                lock (_toolRetryLock) { _toolRetryTracker.Remove(toolName); }
                 return result;
             }
             catch (Exception ex)
             {
-                _toolRetryTracker[toolName] = (attemptCount, ex.Message);
+                lock (_toolRetryLock) { _toolRetryTracker[toolName] = (attemptCount, ex.Message); }
                 Logger.Warning($"[Automation] 工具 {toolName} 第 {attemptCount} 次异常: {ex.Message}");
 
                 if (attemptCount < 4)
                     return $"⚠️ 工具执行异常 (第{attemptCount}次): {ex.Message}\n建议: 先 browser_snapshot 获取最新页面状态，再换新 element_id 重试。";
 
-                _toolRetryTracker.Remove(toolName);
+                lock (_toolRetryLock) { _toolRetryTracker.Remove(toolName); }
                 return $"❌ 工具执行异常 (已尝试{attemptCount}次): {ex.Message}\n请使用 ask_user 向用户求助。";
             }
         }
@@ -1061,12 +1109,17 @@ public class ChatViewModel : INotifyPropertyChanged
             // 失败: 返回详细错误信息 + ask_user 提示
 
             // 获取或初始化重试状态
-            var (attemptCount, lastError) = _toolRetryTracker.GetValueOrDefault(toolName);
-            attemptCount++;
-            _toolRetryTracker[toolName] = (attemptCount, null);
+            int attemptCountMcp;
+            lock (_toolRetryLock)
+            {
+                var retryInfo = _toolRetryTracker.GetValueOrDefault(toolName);
+                attemptCountMcp = retryInfo.Count;
+                attemptCountMcp++;
+                _toolRetryTracker[toolName] = (attemptCountMcp, null);
+            }
 
             // 根据尝试次数切换策略
-            var retryDelay = attemptCount switch
+            var retryDelay = attemptCountMcp switch
             {
                 1 => 0,          // 第一次：不等待
                 2 => 1000,       // 第二次：等 1 秒后重试
@@ -1076,7 +1129,7 @@ public class ChatViewModel : INotifyPropertyChanged
 
             if (retryDelay > 0)
             {
-                Logger.Debug($"[Solve] 第 {attemptCount} 次重试 \"{toolName}\"，等待 {retryDelay}ms");
+                Logger.Debug($"[Solve] 第 {attemptCountMcp} 次重试 \"{toolName}\"，等待 {retryDelay}ms");
                 await Task.Delay(retryDelay);
             }
 
@@ -1084,47 +1137,47 @@ public class ChatViewModel : INotifyPropertyChanged
             var callArgs = args ?? new Dictionary<string, object?>();
 
             // 第 3/4 次重试时自动切换定位方式
-            if (attemptCount >= 3 && callArgs.ContainsKey("element"))
+            if (attemptCountMcp >= 3 && callArgs.ContainsKey("element"))
             {
                 // 如果之前用 xp= hash，现在尝试用 text 描述
                 Logger.Debug($"[Solve] 换方法：尝试文本描述定位替代 hash");
             }
-            if (attemptCount >= 3 && callArgs.ContainsKey("target"))
+            if (attemptCountMcp >= 3 && callArgs.ContainsKey("target"))
             {
                 Logger.Debug($"[Solve] 换方法：尝试先 snapshot 获取最新状态");
-                try { await SkillSystem.McpClient.CallToolAsync("browser_snapshot"); } catch { }
+                try { await Task.Run(() => SkillSystem.McpClient.CallToolAsync("browser_snapshot"), ct).ConfigureAwait(false); } catch { }
             }
 
             try
             {
-                Logger.Info($"[MCP] 调用工具: {toolName} (尝试 #{attemptCount})");
-                var result = await SkillSystem.McpClient.CallToolAsync(toolName, callArgs);
+                Logger.Info($"[MCP] 调用工具: {toolName} (尝试 #{attemptCountMcp})");
+                var result = await Task.Run(() => SkillSystem.McpClient.CallToolAsync(toolName, callArgs), ct).ConfigureAwait(false);
                 Logger.Debug($"[MCP] {toolName} 返回: {result.Truncate(300)}");
 
                 // 成功 → 清除重试记录
-                _toolRetryTracker.Remove(toolName);
+                lock (_toolRetryLock) { _toolRetryTracker.Remove(toolName); }
                 return result;
             }
             catch (Exception ex)
             {
-                _toolRetryTracker[toolName] = (attemptCount, ex.Message);
-                Logger.Warning($"[MCP] 工具 {toolName} 第 {attemptCount} 次失败: {ex.Message}");
+                lock (_toolRetryLock) { _toolRetryTracker[toolName] = (attemptCountMcp, ex.Message); }
+                Logger.Warning($"[MCP] 工具 {toolName} 第 {attemptCountMcp} 次失败: {ex.Message}");
 
-                if (attemptCount < 4)
+                if (attemptCountMcp < 4)
                 {
                     // 未达上限，返回失败信息让 AI 自己决定是否继续重试
-                    var hint = attemptCount switch
+                    var hint = attemptCountMcp switch
                     {
                         1 => "重试 1 次看看是否能恢复",
                         2 => "换个方法试试（换选择器、先获取快照、等待片刻）",
                         _ => "如果尝试了多种方法仍不行，调用 ask_user 向用户求助"
                     };
-                    return $"⚠️ 工具执行失败 (第{attemptCount}次): {ex.Message}\n建议: {hint}";
+                    return $"⚠️ 工具执行失败 (第{attemptCountMcp}次): {ex.Message}\n建议: {hint}";
                 }
 
                 // 超过 4 次 → 清除记录，返回严重错误提示 AI 求助用户
-                _toolRetryTracker.Remove(toolName);
-                return $"❌ 工具执行失败 (已尝试{attemptCount}次): {ex.Message}\n" +
+                lock (_toolRetryLock) { _toolRetryTracker.Remove(toolName); }
+                return $"❌ 工具执行失败 (已尝试{attemptCountMcp}次): {ex.Message}\n" +
                        "已连续失败多次，请使用 ask_user 向用户描述已尝试的方法和现象，获取用户指引。";
             }
         }
@@ -1136,7 +1189,7 @@ public class ChatViewModel : INotifyPropertyChanged
             if (compositeSkill != null)
             {
                 Logger.Info($"[MCP] 执行组合技能: {toolName}");
-                var result = await SkillSystem.Executor.ExecuteAsync(toolName, args ?? new());
+                var result = await Task.Run(() => SkillSystem.Executor.ExecuteAsync(toolName, args ?? new()), ct).ConfigureAwait(false);
                 if (result.Status == SkillStat.Succeeded)
                 {
                     var outputText = result.Outputs.GetValueOrDefault("result")?.ToString();
@@ -1174,8 +1227,8 @@ public class ChatViewModel : INotifyPropertyChanged
     /// <summary>取消当前正在进行的 AI 流式请求（由 MainWindow 关闭时调用）</summary>
     public void CancelActiveRequest()
     {
+        Logger.Debug("[CancelActiveRequest] 取消当前 AI 请求");
         if (_sendCts == null) return;
-        Logger.Debug("取消当前 AI 请求");
         _sendCts.Cancel();
         _sendCts = null;
         _sendGeneration++;
@@ -1183,6 +1236,7 @@ public class ChatViewModel : INotifyPropertyChanged
 
     public async void SendAsync()
     {
+        Logger.Debug($"[SendAsync] 用户输入长度={(_inputText?.Length ?? 0)}, IsLoading={_isLoading}, IsAwaitingUserInput={IsAwaitingUserInput}");
         var text = InputText?.Trim();
         if (string.IsNullOrWhiteSpace(text) || IsLoading) return;
 
@@ -1219,6 +1273,11 @@ public class ChatViewModel : INotifyPropertyChanged
         var request = StartSendRequest();
         var ct = request.Cts.Token;
 
+        // ★★★ 创建会话级聊天日志记录器 ★★★
+        _chatLogger = new ChatSessionLogger();
+        if (_aiClient is Services.AiClient aiClient)
+            aiClient.ChatLogger = _chatLogger;
+
         Logger.Info($"══════ AI 请求 ══════");
         Logger.Info($"用户输入: {text}");
         Logger.Debug($"══════ 用户输入 ({text.Length}字符) ══════");
@@ -1254,13 +1313,15 @@ public class ChatViewModel : INotifyPropertyChanged
         var lastUiUpdate = Stopwatch.StartNew();
 
         // 动态节流：内容越长越降低 UI 更新频率，减轻 Markdown 转换器压力
+        // 对超长文本进一步降低更新频率，防止 UI 线程被 WPF 布局线程淹没
         int GetUiThrottleMs(int contentLength) => contentLength switch
         {
             < 500 => 80,
             < 2000 => 150,
             < 5000 => 300,
             < 12000 => 600,
-            _ => 1200
+            < 20000 => 2000,
+            _ => 3000   // 超长文本最小 3s 更新一次，给 WPF 渲染留出时间
         };
 
         // ===== 流式累计日志：只记录新增片段，避免长回复反复写入完整内容导致 UI/磁盘卡顿 =====
@@ -1329,7 +1390,7 @@ public class ChatViewModel : INotifyPropertyChanged
                 }
 
                 await foreach (var chunk in _aiClient.ExecuteConversationAsync(
-                        mutableMessages, ExecuteAiToolAsync, ct: ct))
+                        mutableMessages, (name, args) => ExecuteAiToolAsync(name, args, ct), ct: ct))
                     {
                         if (request.Generation != _sendGeneration || ct.IsCancellationRequested)
                             throw new OperationCanceledException(ct);
@@ -1420,6 +1481,10 @@ public class ChatViewModel : INotifyPropertyChanged
                 {
                     Logger.Info($"  AI回复 完成 — 以上为最终累计内容 ({aiMsg.Content.Length}字符)");
                 }
+
+                // ★★★ 记录 AI 回复 ★★★
+                if (_chatLogger != null)
+                    _chatLogger.LogGet(aiMsg.Content);
             }
             else
             {
@@ -1456,6 +1521,10 @@ public class ChatViewModel : INotifyPropertyChanged
                 {
                     Logger.Info($"  AI回复 完成 — 以上为最终累计内容 ({aiMsg.Content.Length}字符)");
                 }
+
+                // ★★★ 记录 AI 回复 ★★★
+                if (_chatLogger != null)
+                    _chatLogger.LogGet(aiMsg.Content);
             }
         }
         catch (OperationCanceledException)
@@ -1496,6 +1565,25 @@ public class ChatViewModel : INotifyPropertyChanged
             request.Cts.Dispose();
             if (loopGateHeld)
                 _aiLoopGate.Release();
+
+            // 清理快照文件（每次 AI 请求结束后）
+            CleanupSnapshot();
+        }
+    }
+
+    /// <summary>清理当前快照文件</summary>
+    private void CleanupSnapshot()
+    {
+        try
+        {
+            if (_automationRouter != null)
+            {
+                _automationRouter.Automation.ClearSnapshot();
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning($"[Snapshot] 清理快照文件失败: {ex.Message}");
         }
     }
 
@@ -1518,12 +1606,16 @@ public class ChatViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(CanRespondToAskUser));
         CommandManager.InvalidateRequerySuggested();
         _currentConversationId = Guid.NewGuid().ToString("N");
+        // 关闭上一轮的聊天日志
+        _chatLogger?.Dispose();
+        _chatLogger = null;
         Messages.Clear();
         TodoItems.Clear();
         _contextBuilder.ClearRuntimeState();
         // 显式复位状态机（ClearRuntimeState 内部也调用了 TaskStateMachine?.Reset()）
         _taskStateMachine.Reset();
         _contextBuilder.TaskStateMachine = _taskStateMachine;
+        CleanupSnapshot();
         AddSystemMessage("新的对话已开始。有什么需要帮忙的吗？我是 Bermain（板儿面）。");
         RefreshConversationList();
         // GC.Collect() 已移除：在 UI 线程上触发 Gen2 阻塞回收会导致界面卡死
@@ -1532,7 +1624,7 @@ public class ChatViewModel : INotifyPropertyChanged
 
     public void ClearConversation()
     {
-        Logger.Debug("清空当前对话");
+        Logger.Debug("[ClearConversation] 清空当前对话消息");
         CancelActiveRequest();
         IsLoading = false;
         IsAwaitingUserInput = false;
@@ -1546,14 +1638,19 @@ public class ChatViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(PendingAskUserQuestion));
         OnPropertyChanged(nameof(CanRespondToAskUser));
         CommandManager.InvalidateRequerySuggested();
+        // 关闭上一轮的聊天日志
+        _chatLogger?.Dispose();
+        _chatLogger = null;
         Messages.Clear();
         TodoItems.Clear();
         _contextBuilder.ClearRuntimeState();
+        CleanupSnapshot();
         AddSystemMessage("对话已清空。");
     }
 
     public void LoadConversation(object? id)
     {
+        Logger.Debug($"[LoadConversation] id={id?.GetType().Name ?? "null"}");
         if (id is not string convId)
         {
             Logger.Warning($"LoadConversation: 无效参数 {id?.GetType().Name ?? "null"}");
@@ -1595,6 +1692,7 @@ public class ChatViewModel : INotifyPropertyChanged
 
     public void DeleteConversation(object? id)
     {
+        Logger.Debug($"[DeleteConversation] id={id}");
         if (id is not string convId) return;
         Logger.Info($"删除对话: {convId}");
         ConversationService.DeleteConversation(convId);
@@ -1629,6 +1727,7 @@ public class ChatViewModel : INotifyPropertyChanged
 
     public async Task<bool> TestConnectionAsync()
     {
+        using var _ = Logger.Trace("ChatViewModel.TestConnectionAsync");
         StatusMessage = "测试连接中…";
         Logger.Info("手动测试 AI 连接");
         var ok = await _aiClient.TestConnectionAsync();
@@ -1637,35 +1736,33 @@ public class ChatViewModel : INotifyPropertyChanged
         return ok;
     }
 
-    private static string FormatBrowserObservation(string snapshotResult, int maxElements)
+    private static string FormatBrowserObservation(string snapshotJson, int maxElements)
     {
         try
         {
-            using var outerDoc = JsonDocument.Parse(snapshotResult);
-            var outer = outerDoc.RootElement;
-            var ok = outer.TryGetProperty("ok", out var okEl) && okEl.ValueKind == JsonValueKind.True;
-            if (!ok)
+            using var doc = JsonDocument.Parse(snapshotJson);
+            var snapshot = doc.RootElement;
+
+            // 检查是否为旧 router wrapper 格式（理论上不应该再出现），降级处理
+            if (snapshot.ValueKind == JsonValueKind.Object &&
+                snapshot.TryGetProperty("ok", out var okEl) && okEl.ValueKind == JsonValueKind.True)
             {
-                var error = GetJsonString(outer, "error") ?? "未知错误";
-                return $"❌ observe_browser 获取失败: {error}\n原始返回: {snapshotResult.Truncate(2000)}";
+                var data = GetJsonString(snapshot, "data");
+                if (!string.IsNullOrWhiteSpace(data))
+                {
+                    // 递归解析内部快照
+                    return FormatBrowserObservation(data, maxElements);
+                }
             }
 
-            var data = GetJsonString(outer, "data");
-            if (string.IsNullOrWhiteSpace(data))
-                return $"⚠️ observe_browser 未获得页面快照数据。原始返回: {snapshotResult.Truncate(2000)}";
-
-            using var snapshotDoc = JsonDocument.Parse(data);
-            var snapshot = snapshotDoc.RootElement;
             if (snapshot.ValueKind != JsonValueKind.Object)
             {
-                var currentUrl = GetJsonString(outer, "url") ?? "";
                 return "⚠️ observe_browser 暂时没有可用页面结构。页面可能仍在加载、脚本尚未注入，或当前站点暂不允许结构化读取。"
-                    + $"\nCurrent URL: {currentUrl}"
-                    + "\n建议: 先调用 browser_wait(ms=1000) 或等待页面标题稳定后再次 observe_browser；如果仍失败，再用 browser_screenshot 做最后视觉确认。";
+                    + "\n建议: 先调用 browser_wait(ms=1000) 或等待页面标题稳定后再次 observe_browser。";
             }
 
             var title = GetJsonString(snapshot, "title") ?? "";
-            var url = GetJsonString(snapshot, "url") ?? GetJsonString(outer, "url") ?? "";
+            var url = GetJsonString(snapshot, "url") ?? "";
             var snapshotAt = GetJsonString(snapshot, "snapshotAt") ?? DateTime.Now.ToString("O");
             var elementCount = GetJsonInt(snapshot, "elementCount") ?? 0;
             var truncated = GetJsonBool(snapshot, "truncated") ?? false;
@@ -1703,7 +1800,7 @@ public class ChatViewModel : INotifyPropertyChanged
         }
         catch (Exception ex)
         {
-            return $"⚠️ observe_browser 已获取原始快照，但格式化失败: {ex.Message}\n\n原始返回:\n{snapshotResult.Truncate(12000)}";
+            return $"⚠️ observe_browser 已获取原始快照，但格式化失败: {ex.Message}\n\n原始返回:\n{snapshotJson.Truncate(12000)}";
         }
     }
 
@@ -1754,6 +1851,25 @@ public class ChatViewModel : INotifyPropertyChanged
                 .Replace("<", "&lt;")
                 .Replace(">", "&gt;")
                 .Replace("\"", "&quot;");
+
+    /// <summary>从快照 JSON 中提取摘要信息（URL、标题、元素数量），避免将完整 JSON 注入对话上下文</summary>
+    private static string TruncateSnapshotSummary(string snapshotJson)
+    {
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(snapshotJson);
+            var root = doc.RootElement;
+            var url = GetJsonString(root, "url") ?? "";
+            var title = GetJsonString(root, "title") ?? "";
+            var elemCount = GetJsonInt(root, "elementCount") ?? (root.TryGetProperty("elements", out var e) && e.ValueKind == System.Text.Json.JsonValueKind.Array ? e.GetArrayLength() : 0);
+            var truncated = GetJsonBool(root, "truncated") ?? false;
+            return $"[快照摘要] URL: {url}, 标题: {title}, 元素: {elemCount} 个{(truncated ? " (已截断)" : "")}。详细元素列表已保存到本地文件，请使用 browser_find_element 查询。";
+        }
+        catch
+        {
+            return $"[快照摘要] 解析失败，共 {snapshotJson.Length} 字符。详细元素列表已保存到本地文件，请使用 browser_find_element 查询。";
+        }
+    }
 
     private static string? GetJsonString(JsonElement element, string propertyName)
     {
@@ -1835,27 +1951,39 @@ public class ChatViewModel : INotifyPropertyChanged
                     content.Contains("✅", StringComparison.OrdinalIgnoreCase))
                 {
                     // 尝试从工具结果中提取 ID
-                    var idMatch = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object?>>(
-                        ExtractJsonFromContent(content));
-                    if (idMatch?.TryGetValue("id", out var idVal) == true)
-                        completedIds.Add(idVal?.ToString() ?? "");
+                    try
+                    {
+                        var idMatch = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object?>>(
+                            ExtractJsonFromContent(content));
+                        if (idMatch?.TryGetValue("id", out var idVal) == true)
+                            completedIds.Add(idVal?.ToString() ?? "");
+                    }
+                    catch { } // 非 JSON 内容（如超时错误文本）直接忽略
                 }
                 else if (content.Contains("子任务受阻", StringComparison.OrdinalIgnoreCase) ||
                          content.Contains("❌", StringComparison.OrdinalIgnoreCase) &&
                          content.Contains("blocked", StringComparison.OrdinalIgnoreCase))
                 {
-                    var idMatch = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object?>>(
-                        ExtractJsonFromContent(content));
-                    if (idMatch?.TryGetValue("id", out var idVal) == true)
-                        blockedIds.Add(idVal?.ToString() ?? "");
+                    try
+                    {
+                        var idMatch = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object?>>(
+                            ExtractJsonFromContent(content));
+                        if (idMatch?.TryGetValue("id", out var idVal) == true)
+                            blockedIds.Add(idVal?.ToString() ?? "");
+                    }
+                    catch { } // 非 JSON 内容（如超时错误文本）直接忽略
                 }
             }
             else if (msg.ToolName == "start_subtask")
             {
-                var idMatch = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object?>>(
-                    ExtractJsonFromContent(content));
-                if (idMatch?.TryGetValue("id", out var idVal) == true)
-                    startedIds.Add(idVal?.ToString() ?? "");
+                try
+                {
+                    var idMatch = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object?>>(
+                        ExtractJsonFromContent(content));
+                    if (idMatch?.TryGetValue("id", out var idVal) == true)
+                        startedIds.Add(idVal?.ToString() ?? "");
+                }
+                catch { } // 非 JSON 内容（如超时错误文本）直接忽略
             }
         }
 
@@ -2096,11 +2224,13 @@ public class ChatViewModel : INotifyPropertyChanged
     {
         var total = Messages.Sum(m => m.Content.Length / 2);
         TokenEstimate = total;
+        Logger.Debug($"[UpdateTokenEstimate] 估算 token 数={total}");
     }
 
     /// <summary>通知 UI 某条消息内容已变化（流式更新）</summary>
     public void NotifyMessageChanged()
     {
+        Logger.Debug("[NotifyMessageChanged] 通知 Messages 集合变更");
         OnPropertyChanged(nameof(Messages));
     }
 

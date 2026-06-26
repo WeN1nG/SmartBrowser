@@ -64,6 +64,7 @@ public class ConversationService
     /// <summary>保存会话</summary>
     public static void SaveConversation(string id, List<ChatMessage> messages)
     {
+        Logger.Debug($"[SaveConversation] id={id}, messages={messages?.Count ?? 0}");
         var path = Path.Combine(DataDir, $"{id}.json");
         Logger.Debug($"保存对话: {id} ({messages.Count} 条消息) → {path}");
 

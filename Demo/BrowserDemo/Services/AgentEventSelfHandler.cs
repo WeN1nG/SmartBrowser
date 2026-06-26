@@ -39,6 +39,7 @@ internal sealed class AgentEventSelfHandler
 
     public ToolSelfHandlingDecision BeforeToolExecution(string toolName, Dictionary<string, object?>? args, IReadOnlyList<ChatMessage> messages)
     {
+        Logger.Debug($"[BeforeToolExecution] toolName={toolName}, actionKey={BuildActionKey(toolName, args)}");
         var actionKey = BuildActionKey(toolName, args);
 
         if (IsElementTool(toolName) && TryGetArgString(args, "element_id", out var elementId) &&
@@ -83,6 +84,7 @@ internal sealed class AgentEventSelfHandler
 
     public void AfterToolExecution(string toolName, Dictionary<string, object?>? args, string? result)
     {
+        Logger.Debug($"[AfterToolExecution] toolName={toolName}");
         var argsSignature = BuildArgsSignature(args);
         var resultInfo = ResultInfo.From(result);
         var actionKey = $"{toolName}|{argsSignature}";
@@ -210,6 +212,7 @@ internal sealed class AgentEventSelfHandler
 
     public bool ShouldTerminate(out string userFacingMessage)
     {
+        Logger.Debug($"[ShouldTerminate] deadEndScore={_deadEndScore}, staleTerm={_staleElementTerminations}, actionFail={_consecutiveActionFailures}, explore={_consecutiveExplorationSteps}");
         if (_staleElementTerminations >= 3)
         {
             _terminateMessage = $"⛔ AI 已连续 {_staleElementTerminations} 次尝试复用过期元素导致死胡同，系统已中止工具循环。页面结构可能已发生变化，请刷新页面后重新开始任务。";

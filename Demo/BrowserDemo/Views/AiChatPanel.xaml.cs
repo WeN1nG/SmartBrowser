@@ -4,6 +4,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Threading;
 using BrowserDemo.Models;
+using BrowserDemo.Services;
 using BrowserDemo.ViewModels;
 
 namespace BrowserDemo.Views;
@@ -48,6 +49,7 @@ public partial class AiChatPanel : UserControl
 
     private void AttachViewModel(ChatViewModel? vm)
     {
+        Logger.Debug($"[AttachViewModel] vm={vm?.GetType().Name ?? "null"}");
         if (ReferenceEquals(_vm, vm)) return;
 
         DetachViewModel();
@@ -62,6 +64,7 @@ public partial class AiChatPanel : UserControl
 
     private void DetachViewModel()
     {
+        Logger.Debug("[DetachViewModel] 解绑 ViewModel");
         if (_vm == null) return;
 
         _vm.PropertyChanged -= OnViewModelPropertyChanged;

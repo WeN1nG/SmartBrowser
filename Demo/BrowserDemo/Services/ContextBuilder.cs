@@ -120,6 +120,7 @@ public class ContextBuilder
     /// </summary>
     public string BuildSystemPrompt()
     {
+        using var _ = Logger.Trace("ContextBuilder.BuildSystemPrompt");
         if (!IsEnabled) return string.Empty;
 
         var sb = new StringBuilder();
@@ -144,6 +145,7 @@ public class ContextBuilder
     /// <summary>注册一个工具定义</summary>
     public void RegisterTool(ToolDefinition tool)
     {
+        Logger.Debug($"[RegisterTool] toolName={tool?.Name ?? "null"}");
         if (tool == null || string.IsNullOrWhiteSpace(tool.Name)) return;
         Logger.Debug($"ContextBuilder: 注册工具 \"{tool.Name}\" — {tool.Description}");
         RegisteredTools.Add(tool);
@@ -152,6 +154,7 @@ public class ContextBuilder
     /// <summary>批量注册工具定义</summary>
     public void RegisterTools(IEnumerable<ToolDefinition> tools)
     {
+        Logger.Debug($"[RegisterTools] 批量注册工具");
         if (tools == null) return;
         foreach (var t in tools) RegisterTool(t);
     }
@@ -168,7 +171,9 @@ public class ContextBuilder
     /// <summary>清空所有工具注册</summary>
     public void ClearTools()
     {
+        Logger.Debug($"[ClearTools] 清空 {RegisteredTools.Count} 个已注册工具");
         RegisteredTools.Clear();
+        _runtimeToolEvidence.Clear();
         Logger.Debug("ContextBuilder: 所有工具已清空");
     }
 
@@ -288,17 +293,28 @@ public class ContextBuilder
         sb.AppendLine("- **成功** → 调用 `finish_subtask(status=\"completed\")`，系统会立刻更新清单并把下一子任务标为进行中");
         sb.AppendLine("- **首次失败** → **立即重试 1 次**（可能只是页面抖动）");
         sb.AppendLine("- **再次失败** → **切换思路执行 2 次**，例如：");
-        sb.AppendLine("  1. 先 `browser_snapshot` 获取最新页面快照，重新选择元素整数 `id`");
+        sb.AppendLine("  1. 先 `browser_snapshot` 获取最新页面快照，然后用 `browser_find_element` 查询具体元素");
         sb.AppendLine("  2. 如果页面变化导致旧 `element_id` 失效，不要继续使用旧 id");
         sb.AppendLine("  3. `browser_wait_for` 等待片刻再操作");
         sb.AppendLine("  4. 改用组合技能、键盘操作、页面文本定位或其它可行路径");
         sb.AppendLine("- **仍然失败** → 调用 `finish_subtask(status=\"blocked\")`，报告错误并通知用户需要手动处理，不要无限重试");
         sb.AppendLine();
+        sb.AppendLine("### 2.1 快照本地化（必须遵守）");
+        sb.AppendLine("- `browser_snapshot` 的结果已保存到本地 JSON 文件，**不会直接返回完整 JSON 到你的上下文**");
+        sb.AppendLine("- 获取快照后，**必须**使用 `browser_find_element` 工具查询具体元素");
+        sb.AppendLine("- `browser_find_element` 用法：");
+        sb.AppendLine("  - `query`（必需）：搜索关键词，匹配 tag/aria-label/text/name/placeholder 字段");
+        sb.AppendLine("  - `tag`（可选）：按 HTML 标签过滤，如 'button', 'a', 'input'");
+        sb.AppendLine("  - `ids`（可选）：限定只搜索特定 element_id 范围");
+        sb.AppendLine("- 示例：`browser_find_element(query=\"登录\")`、`browser_find_element(tag=\"button\", query=\"提交\")`");
+        sb.AppendLine("- 如果需要查看快照元信息（URL、元素数量等），使用 `browser_snapshot_info`");
+        sb.AppendLine("- **不要假设你能看到快照 JSON 的完整内容**，每次操作前必须用 `browser_find_element` 查询");
+        sb.AppendLine();
         sb.AppendLine("### 3. 工具选择指南");
         sb.AppendLine("| 场景 | 优先使用 | 说明 |");
         sb.AppendLine("|------|---------|------|");
         sb.AppendLine("| 打开页面 | `browser_navigate` | 自动等待加载完成 |");
-        sb.AppendLine("| 查看页面内容 | `observe_browser` | PageAgent 风格观察，包含当前页面与可交互元素；原始 A11y JSON 可用 `browser_snapshot` |");
+        sb.AppendLine("| 查看页面内容 | `observe_browser` | PageAgent 风格观察，包含当前页面与可交互元素；获取快照后需用 `browser_find_element` 查询具体元素 |");
         sb.AppendLine("| 点击元素 | `browser_click` | 先 `observe_browser` 或 `browser_snapshot`，使用返回的整数 `id` 作为 `element_id` |");
         sb.AppendLine("| 输入文本 | `browser_type` | 使用最新观察/快照整数 `element_id`，触发 input/change 事件 |");
         sb.AppendLine("| 填充表单 | `browser_fill_form` | 多字段一次填充，可用元素 id 或 name/aria-label/placeholder |");

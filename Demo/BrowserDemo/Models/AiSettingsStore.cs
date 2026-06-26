@@ -12,6 +12,7 @@ public class AiSettingsStore
 
     public AiSettings ResolveActive()
     {
+        Logger.Debug($"[ResolveActive] 配置文件数={Profiles.Count}, activeId={ActiveId}");
         EnsureProfileIds();
         if (Profiles.Count == 0) return new AiSettings();
 
@@ -20,6 +21,7 @@ public class AiSettingsStore
 
     public void Upsert(AiSettings settings, bool setActive = true)
     {
+        Logger.Debug($"[Upsert] id={settings?.Id ?? "null"}, displayName={settings?.DisplayName ?? "null"}, setActive={setActive}");
         if (string.IsNullOrWhiteSpace(settings.Id))
             settings.Id = Guid.NewGuid().ToString("N");
 
@@ -35,6 +37,7 @@ public class AiSettingsStore
 
     public static AiSettingsStore Load()
     {
+        Logger.Debug($"[Load] configPath={AiSettings.ConfigPath}");
         try
         {
             if (!File.Exists(AiSettings.ConfigPath))
@@ -79,10 +82,12 @@ public class AiSettingsStore
 
     public void Save()
     {
+        Logger.Debug($"[Save] 保存 {Profiles.Count} 个配置到 {AiSettings.ConfigPath}");
         EnsureProfileIds();
         NormalizeProviderProtocols();
         var json = JsonSerializer.Serialize(this, AiClient.JsonOptions);
         File.WriteAllText(AiSettings.ConfigPath, json);
+        Logger.Debug("AI 设置已持久化");
     }
 
     private AiSettings? Find(string? id)

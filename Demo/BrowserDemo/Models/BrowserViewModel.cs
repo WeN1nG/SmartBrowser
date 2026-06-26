@@ -203,6 +203,7 @@ public class BrowserViewModel : INotifyPropertyChanged
 
     public void AddCurrentPageToBookmarks()
     {
+        Logger.Debug("[AddCurrentPageToBookmarks] 尝试收藏当前页面");
         if (ActiveTab == null)
         {
             StatusText = "没有可收藏的页面";

@@ -4,6 +4,7 @@ using System.Windows;
 using System.Windows.Data;
 using System.Windows.Documents;
 using System.Windows.Media;
+using BrowserDemo.Services;
 
 namespace BrowserDemo.MarkdownConverters;
 
@@ -32,7 +33,9 @@ public class MarkdownToFlowDocumentConverter : IValueConverter
 
     public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
     {
-        if (value is not string markdown || string.IsNullOrEmpty(markdown))
+        var markdown = value as string;
+        Logger.Debug($"[MarkdownToFlowDocumentConverter.Convert] inputLen={markdown?.Length ?? 0}");
+        if (string.IsNullOrEmpty(markdown))
             return null;
 
         var doc = new FlowDocument
@@ -48,6 +51,14 @@ public class MarkdownToFlowDocumentConverter : IValueConverter
         var displayMarkdown = markdown.Length > 12000
             ? markdown[^12000..].Insert(0, "...（较早输出已折叠，仅显示最新内容）\n\n")
             : markdown;
+
+        // 极端超长文本：进一步限制解析量，防止 WPF 渲染线程卡死
+        const int MaxRenderChars = 12000;
+        if (displayMarkdown.Length > MaxRenderChars)
+        {
+            displayMarkdown = displayMarkdown[..MaxRenderChars] +
+                $"\n\n...（内容过长已截断，共 {markdown.Length} 字符）";
+        }
 
         var paragraphs = ParseMarkdown(displayMarkdown);
         foreach (var p in paragraphs)
@@ -390,9 +401,23 @@ public class MarkdownToFlowDocumentConverter : IValueConverter
                 }
             }
 
-            // --- 普通字符 ---
-            inlines.Add(new Run(text[i].ToString()));
-            i++;
+            // --- 普通字符（批量合并连续纯文本，避免为每个字符创建 Run 对象） ---
+            int plainStart = i;
+            while (i < len)
+            {
+                var c = text[i];
+                if (c == '`' || c == '*' || c == '[' || c == ']')
+                    break;
+                if (i + 1 < len && c == '*' && text[i + 1] == '*')
+                    break;
+                if (i + 1 < len && c == '*' && text[i + 1] == '(')
+                    break;
+                i++;
+            }
+            if (i > plainStart)
+            {
+                inlines.Add(new Run(text.Substring(plainStart, i - plainStart)));
+            }
         }
 
         return inlines;

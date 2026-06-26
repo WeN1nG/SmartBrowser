@@ -9,6 +9,57 @@ using BrowserDemo.Models;
 
 namespace BrowserDemo.Services;
 
+/// <summary>会话级聊天日志记录器——按会话写 send/get 格式的完整对话文件到 Log/ 目录</summary>
+public sealed class ChatSessionLogger : IDisposable
+{
+    private readonly string _filePath;
+    private readonly StreamWriter _writer;
+    private readonly object _lock = new();
+    private bool _disposed;
+
+    public ChatSessionLogger()
+    {
+        var logDir = Path.GetFullPath(Path.Combine(
+            AppDomain.CurrentDomain.BaseDirectory, "..\\..\\..\\Log"));
+        Directory.CreateDirectory(logDir);
+        var fileName = $"{DateTime.Now:M-d-H-m-s}-chat.log";
+        _filePath = Path.Combine(logDir, fileName);
+        _writer = new StreamWriter(_filePath, append: false, Encoding.UTF8);
+    }
+
+    /// <summary>记录发送给 AI 的完整对话内容</summary>
+    public void LogSend(string content)
+    {
+        lock (_lock)
+        {
+            if (_disposed) return;
+            _writer.WriteLine($"send:{content}");
+            _writer.Flush();
+        }
+    }
+
+    /// <summary>记录 AI 返回的完整回复内容</summary>
+    public void LogGet(string content)
+    {
+        lock (_lock)
+        {
+            if (_disposed) return;
+            _writer.WriteLine($"get:{content}");
+            _writer.Flush();
+        }
+    }
+
+    public void Dispose()
+    {
+        lock (_lock)
+        {
+            if (_disposed) return;
+            _disposed = true;
+        }
+        _writer?.Dispose();
+    }
+}
+
 /// <summary>AI 客户端实现——支持 OpenAI 兼容格式（15+ 服务商）+ Anthropic 原生格式</summary>
 public class AiClient : IAiClient, IDisposable
 {
@@ -49,6 +100,9 @@ public class AiClient : IAiClient, IDisposable
     /// <summary>工具循环硬上限——防止无限迭代（即使 AI 不响应提醒也强制终止）</summary>
     private const int MaxHardIterations = 80;
 
+    /// <summary>单轮 AI 纯文本回复最大长度（字符数）。超出此长度的回复会被截断，防止 UI 线程被 Markdown 渲染卡死。</summary>
+    private const int MaxAiReplyChars = 8000;
+
     /// <summary>browser_js 连续返回 null 的轮数（用于自诊断）</summary>
     private int _consecutiveJsNullResults = 0;
 
@@ -62,6 +116,17 @@ public class AiClient : IAiClient, IDisposable
     private readonly Queue<(string Hash, string Preview)> _recentAiTextFingerprints = new();
     /// <summary>复读检测阈值：连续 N 轮返回高度相似的文本 → 视为复读</summary>
     private const int MaxConsecutiveAiRepeats = 2;
+
+    // ★★★ 语义复读检测（新增）：追踪最近 N 轮完整文本，用于检测增量重复 ★★★
+    private readonly Queue<string> _recentAiTexts = new();
+    private const int MaxRecentAiTexts = 5;
+    /// <summary>语义复读阈值：最近 N 轮文本的 n-gram 重叠率 ≥ 此值 → 视为复读</summary>
+    private const double SemanticRepeatThreshold = 0.75;
+    /// <summary>语义复读触发条件：连续 N 轮超过重叠率阈值</summary>
+    private const int SemanticRepeatConsecutive = 3;
+    /// <summary>长文本增量增长检测：文本超过此长度时，若本轮新增内容少于 MinNewContentForLongText 则告警</summary>
+    private const int LongTextThreshold = 3000;
+    private const int MinNewContentForLongText = 200;
 
     /// <summary>记录一次探测结果，返回是否是对同一 URL 的重复探测</summary>
     public bool ReportProbe(string url, string result)
@@ -101,6 +166,12 @@ public class AiClient : IAiClient, IDisposable
 
     /// <summary>浏览器自动化服务引用（可选，用于 DOM hash 等高级功能）</summary>
     public Services.Automation.BrowserAutomationService? AutomationService { get; set; }
+
+    /// <summary>当前会话的聊天日志记录器（可选）</summary>
+    public ChatSessionLogger? ChatLogger { get; set; }
+
+    /// <summary>HTTP 请求默认超时（秒）——服务器在此时间内未响应则终止</summary>
+    private const int HttpTimeoutSeconds = 30;
 
     public AiClient()
     {
@@ -142,6 +213,14 @@ public class AiClient : IAiClient, IDisposable
         }
 
         var msgs = messages.ToList();
+
+        // ★★★ 记录发送给 AI 的对话内容 ★★★
+        if (ChatLogger != null)
+        {
+            var sendContent = SerializeConversationForLog(msgs);
+            ChatLogger.LogSend(sendContent);
+        }
+
         var provider = ProviderManager.GetProvider(Settings.ProviderKey);
 
         Logger.Info($"AI API 请求: provider={Settings.ProviderKey}, model={Settings.Model}, msgs={msgs.Count}");
@@ -154,10 +233,10 @@ public class AiClient : IAiClient, IDisposable
             : BuildOpenAIRequest(msgs, provider);
         using var request = requestFactory();
 
-        // ★ 独立的 HTTP 请求超时（90s），与用户取消令牌分离
+        // ★ 独立的 HTTP 请求超时（30s），与用户取消令牌分离
         //   避免 HttpClient.Timeout（120s）抛出 OperationCanceledException 后被误判为"用户取消"
         using var httpCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        httpCts.CancelAfter(TimeSpan.FromSeconds(90));
+        httpCts.CancelAfter(TimeSpan.FromSeconds(HttpTimeoutSeconds));
 
         bool isHttpTimeout = false;
         HttpResponseMessage? response = null;
@@ -169,13 +248,13 @@ public class AiClient : IAiClient, IDisposable
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            // 90s HTTP 超时（非用户主动取消）
+            // HTTP 超时（非用户主动取消）
             isHttpTimeout = true;
         }
 
         if (isHttpTimeout)
         {
-            Logger.Warning("HTTP 请求超时（90s）：服务器未在时限内响应");
+            Logger.Warning($"HTTP 请求超时（{HttpTimeoutSeconds}s）：服务器未在时限内响应");
             yield return "⚠️ 服务器响应超时，请重试";
             yield break;
         }
@@ -193,7 +272,8 @@ public class AiClient : IAiClient, IDisposable
             {
                 var error = await response!.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
                 Logger.Error($"API 请求失败: {response.StatusCode} — {TruncateError(error)}");
-                yield return $"⚠️ API 请求失败 ({response!.StatusCode}): {TruncateError(error)}";
+                var described = DescribeServerApiError(error);
+                yield return $"⚠️ API 请求失败 ({response!.StatusCode}): {described}";
                 yield break;
             }
         }
@@ -690,6 +770,13 @@ public class AiClient : IAiClient, IDisposable
 
             Logger.Info($"工具循环 迭代 #{iteration + 1}, 消息数={messages.Count}");
 
+            // ★★★ 记录本轮发送给 AI 的完整对话内容 ★★★
+            if (ChatLogger != null)
+            {
+                var sendContent = SerializeConversationForLog(messages);
+                ChatLogger.LogSend(sendContent);
+            }
+
             // ★★★ Budget 渐进警告：在 50%/75%/90% 消耗点注入提醒 ★★★
             if (iteration > 0 && iteration % 10 == 0)
             {
@@ -843,8 +930,10 @@ public class AiClient : IAiClient, IDisposable
                     _consecutivePlanningGateTrips++;
                     if (_consecutivePlanningGateTrips >= 5)
                     {
+                        var msg = "⛔ 系统已中止本次工具调用：AI 连续 5 轮未按要求调用规划工具。请检查任务状态或重新开始。";
                         Logger.Warning($"规划门禁连续 {_consecutivePlanningGateTrips} 次触发仍未生效，终止请求");
                         _consecutivePlanningGateTrips = 0;
+                        yield return msg;
                         yield break;
                     }
                     else
@@ -920,14 +1009,98 @@ public class AiClient : IAiClient, IDisposable
                         _recentAiTextFingerprints.Dequeue();
                 }
 
-                if (!string.IsNullOrEmpty(cleanedText) && cleanedText != fullText)
+                // ★★★ 语义复读检测（新增）：n-gram 重叠率检测 ★★★
+                // 将文本按 20 字符滑动窗口切分为 n-gram，与最近几轮文本比较重叠率
+                if (_recentAiTexts.Count >= 2 && cleanedText.Length > LongTextThreshold)
                 {
-                    Logger.Info($"AI 最终回复清理: {fullText.Length} → {cleanedText.Length} 字符（剥离了 {fullText.Length - cleanedText.Length} 字符的重复 JSON）");
-                    yield return cleanedText;
+                    var currentNgrams = GetNgrams(cleanedText, 20);
+                    var overlapTotal = 0.0;
+                    var checkCount = 0;
+                    var recentTextsList = _recentAiTexts.ToList();
+
+                    for (int i = 0; i < recentTextsList.Count && i < 3; i++)
+                    {
+                        var prevNgrams = GetNgrams(recentTextsList[i], 20);
+                        if (prevNgrams.Count == 0) continue;
+
+                        // 计算当前 n-gram 有多少在之前文本中出现过
+                        var prevSet = new HashSet<string>(prevNgrams);
+                        var overlap = currentNgrams.Count(n => prevSet.Contains(n));
+                        overlapTotal += (double)overlap / Math.Max(currentNgrams.Count, prevSet.Count);
+                        checkCount++;
+                    }
+
+                    if (checkCount > 0)
+                    {
+                        var avgOverlap = overlapTotal / checkCount;
+                        _recentAiTexts.Enqueue(cleanedText);
+                        while (_recentAiTexts.Count > MaxRecentAiTexts)
+                            _recentAiTexts.Dequeue();
+
+                        if (avgOverlap >= SemanticRepeatThreshold)
+                        {
+                            Logger.Warning(
+                                $"AI 语义复读检测: 重叠率 {avgOverlap:F2} ≥ {SemanticRepeatThreshold}（文本长度 {cleanedText.Length}），触发语义复读终止");
+                            yield return cleanedText;
+                            yield break;
+                        }
+                    }
                 }
                 else
                 {
-                    yield return fullText;
+                    _recentAiTexts.Enqueue(cleanedText);
+                    while (_recentAiTexts.Count > MaxRecentAiTexts)
+                        _recentAiTexts.Dequeue();
+                }
+
+                // ★★★ 长文本增量增长检测（新增）：长文本下极小的新增量意味着在复读 ★★★
+                if (_recentAiTexts.Count >= 3 && cleanedText.Length > LongTextThreshold)
+                {
+                    var prevTexts = _recentAiTexts.ToList();
+                    // 取最早的一条（作为"基线"）
+                    var baseline = prevTexts[0];
+                    if (baseline.Length > LongTextThreshold)
+                    {
+                        // 计算 baseline 和当前文本的最长公共子串比例（简化版：看 baseline 中有多少 50-gram 在当前文本中）
+                        var baselineNgrams = GetNgrams(baseline, 50);
+                        var currentNgramsSet = new HashSet<string>(GetNgrams(cleanedText, 50));
+                        var retained = baselineNgrams.Count(g => currentNgramsSet.Contains(g));
+
+                        // 如果 baseline 中超过 80% 的 50-gram 仍然在当前文本中，且新增内容很少 → 复读
+                        if (baselineNgrams.Count > 0 && (double)retained / baselineNgrams.Count >= 0.80)
+                        {
+                            var newChars = cleanedText.Length - baseline.Length;
+                            if (newChars < MinNewContentForLongText)
+                            {
+                                Logger.Warning(
+                                    $"AI 长文本复读检测: baseline 保留率 {(double)retained / baselineNgrams.Count:F2}，新增仅 {newChars} 字符 < {MinNewContentForLongText}，终止");
+                                yield return cleanedText;
+                                yield break;
+                            }
+                        }
+                    }
+                }
+
+                if (!string.IsNullOrEmpty(cleanedText) && cleanedText != fullText)
+                {
+                    Logger.Info($"AI 最终回复清理: {fullText.Length} → {cleanedText.Length} 字符（剥离了 {fullText.Length - cleanedText.Length} 字符的重复 JSON）");
+                    cleanedText = LimitAiReplyLength(cleanedText);
+                }
+                else
+                {
+                    fullText = LimitAiReplyLength(fullText);
+                    cleanedText = fullText;
+                }
+
+                if (!string.IsNullOrEmpty(cleanedText))
+                {
+                    yield return cleanedText;
+                }
+
+                // ★★★ 记录 AI 最终回复 ★★★
+                if (ChatLogger != null)
+                {
+                    ChatLogger.LogGet(cleanedText);
                 }
                 yield break;
             }
@@ -1016,15 +1189,18 @@ public class AiClient : IAiClient, IDisposable
                     var snippet = toolResult.Length > 200 ? toolResult[..200] + "…" : toolResult;
                     Logger.Debug($"工具 {tc.FunctionName} 执行结果: {snippet}");
 
-                    // ★★★ browser_js 返回 null 检测：JS 执行成功但结果为空 → 提醒 AI 换策略 ★★★
-                    if (tc.FunctionName == "browser_js" && IsJsonNullResult(toolResult))
+                    // ★★★ browser_js 返回 null/空对象检测：JS 执行成功但结果为空 → 提醒 AI 换策略 ★★★
+                    if (tc.FunctionName == "browser_js" && (IsJsonNullResult(toolResult) || IsEmptyObjectResult(toolResult)))
                     {
                         var jsNullCount = IncrementJsNullCount(tc.FunctionName);
                         if (jsNullCount >= 2)
                         {
-                            // 连续多次 JS 查询返回 null，注入系统提示建议换策略
-                            Logger.Warning($"browser_js 连续 {jsNullCount} 次返回 null，注入策略提示");
-                            var jsHint = $"[agent_event code=js_null_hint severity=warning]\nJS 查询连续 {jsNullCount} 次返回空结果，说明页面结构或元素与你预期的不同。instruction: 换一种 JS 查询逻辑（例如改用 querySelectorAll 遍历、检查父容器内容），或先调用 observe_browser 获取完整快照再决定。";
+                            // 判断是 null 还是空结构
+                            var isVoid = IsJsonNullResult(toolResult);
+                            var isEmpObj = IsEmptyObjectResult(toolResult);
+                            var hintType = isVoid ? "空（null）" : (isEmpObj ? "空结构（{} 或 []）" : "空结果");
+                            Logger.Warning($"browser_js 连续 {jsNullCount} 次返回 {hintType}，注入策略提示");
+                            var jsHint = $"[agent_event code=js_null_hint severity=warning]\nJS 查询连续 {jsNullCount} 次返回{hintType}，说明页面结构或元素与你预期的完全不同。\ninstruction: 不要再尝试相同的选择器逻辑。必须切换到以下方法之一：(1) 先用 observe_browser 获取完整页面快照，基于真实结构编写 JS；(2) 用 document.body.innerText 或 document.documentElement.textContent 直接获取全文本；(3) 点击具体结果链接进入详情页。";
                             messages.Add(new ChatMessage
                             {
                                 Role = MessageRole.System,
@@ -1032,6 +1208,21 @@ public class AiClient : IAiClient, IDisposable
                                 Timestamp = DateTime.Now
                             });
                         }
+                    }
+
+                    // ★★★ 检测 fatal 终止信号（browser_navigate 连续失败 3 次触发） ★★★
+                    if (toolResult != null && toolResult.Contains("\"fatal\":\"navigation_loop_terminated\"", StringComparison.OrdinalIgnoreCase))
+                    {
+                        Logger.Warning($"[AiClient] 收到导航致命终止信号，立即结束工具循环");
+                        messages.Add(new ChatMessage
+                        {
+                            Role = MessageRole.System,
+                            Content = "[agent_event code=navigation_fatal severity=critical] 浏览器导航连续 3 次失败，系统已强制终止。instruction: 必须调用 ask_user 向用户报告当前导航失败的原因，请求用户确认目标网站是否可从当前网络环境访问，或提供替代方案。",
+                            Timestamp = DateTime.Now
+                        });
+                        // 在迭代器中不能用 return，改用 yield return + yield break
+                        yield return "[agent_event code=navigation_fatal severity=critical] 浏览器导航连续 3 次失败，系统已强制终止。请调用 ask_user 向用户报告并获取指引。";
+                        yield break;
                     }
 
                     // ★★★ 连续空结果检测：仅内容提取工具返回短内容 → 累加 ★★★
@@ -1090,9 +1281,7 @@ public class AiClient : IAiClient, IDisposable
                     }
 
                     // 连续失败检测：用于 replan 触发
-                    var actionOk = !string.IsNullOrEmpty(toolResult) &&
-                                   !toolResult.Contains("error", StringComparison.OrdinalIgnoreCase) &&
-                                   !toolResult.Contains("失败", StringComparison.OrdinalIgnoreCase);
+                    var actionOk = DetermineActionOk(toolResult);
                     eventHandler.RecordActionOutcome(actionOk);
 
                     // 探索限制检测：当前是否有 active subtask
@@ -1190,10 +1379,10 @@ public class AiClient : IAiClient, IDisposable
             : BuildOpenAIRequest(messages, provider);
         using var request = requestFactory();
 
-        // ★ 独立的 HTTP 请求超时（90s），与用户取消令牌分离
+        // ★ 独立的 HTTP 请求超时（30s），与用户取消令牌分离
         //   避免 HttpClient.Timeout（120s）抛出 OperationCanceledException 后被误判为"用户取消"
         using var httpCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        httpCts.CancelAfter(TimeSpan.FromSeconds(90));
+        httpCts.CancelAfter(TimeSpan.FromSeconds(HttpTimeoutSeconds));
 
         bool isHttpTimeout = false;
         HttpResponseMessage? response = null;
@@ -1204,13 +1393,13 @@ public class AiClient : IAiClient, IDisposable
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            // 90s HTTP 超时（非用户主动取消）
+            // HTTP 超时（非用户主动取消）
             isHttpTimeout = true;
         }
 
         if (isHttpTimeout)
         {
-            Logger.Warning("HTTP 请求超时（90s）：服务器未在时限内响应");
+            Logger.Warning($"HTTP 请求超时（{HttpTimeoutSeconds}s）：服务器未在时限内响应");
             yield return new AiStreamEvent { Type = "error", Text = "服务器响应超时，请重试" };
             yield break;
         }
@@ -1232,7 +1421,8 @@ public class AiClient : IAiClient, IDisposable
                 }
 
                 Logger.Error($"API 请求失败: {response.StatusCode} — {TruncateError(error)}");
-                yield return new AiStreamEvent { Type = "error", Text = $"API 请求失败 ({response.StatusCode}): {TruncateError(error)}" };
+                var describedError = DescribeServerApiError(error);
+                yield return new AiStreamEvent { Type = "error", Text = $"API 请求失败 ({response.StatusCode}): {describedError}" };
                 yield break;
             }
         }
@@ -1327,6 +1517,19 @@ public class AiClient : IAiClient, IDisposable
         return false;
     }
 
+    /// <summary>
+    /// 最大单次流式响应纯文本累计字符数（用于推理模型 reasoning_content 超长截断）。
+    /// kimi-k2.6 等推理模型会在 reasoning_content 中输出超长纯文本，
+    /// 超出此值后强制停止读取并视为完成，防止上下文爆炸和 UI 卡死。
+    /// </summary>
+    private const int MaxStreamingTextChars = 16_384;
+
+    /// <summary>
+    /// 最大单次流式响应事件总数（防止异常无限流）。
+    /// 超出后强制停止并视为完成。
+    /// </summary>
+    private const int MaxStreamEvents = 5000;
+
     /// <summary>解析流式响应为富事件序列</summary>
     private async IAsyncEnumerable<AiStreamEvent> ParseStreamRichAsync(
         HttpResponseMessage response,
@@ -1343,6 +1546,8 @@ public class AiClient : IAiClient, IDisposable
         int lineNum = 0;
         int parsedCount = 0;
         int droppedCount = 0;
+        int textCharCount = 0; // ★ 累计纯文本字符数，用于推理模型超长截断
+        bool hadFinishEvent = false;
 
         while (!reader.EndOfStream && !ct.IsCancellationRequested)
         {
@@ -1404,6 +1609,29 @@ public class AiClient : IAiClient, IDisposable
             if (parsedEvent != null)
             {
                 parsedCount++;
+
+                // ★ 累计纯文本字符数，用于推理模型超长截断
+                if (parsedEvent.Type == "content" && !string.IsNullOrEmpty(parsedEvent.Text))
+                {
+                    textCharCount += parsedEvent.Text.Length;
+                    if (textCharCount > MaxStreamingTextChars)
+                    {
+                        Logger.Warning($"SSE 流文本超长: 累计 {textCharCount} 字符 > {MaxStreamingTextChars}，强制终止流");
+                        yield break;
+                    }
+                }
+
+                // ★ 事件总数上限保护
+                if (parsedCount > MaxStreamEvents)
+                {
+                    Logger.Warning($"SSE 流事件数超限: {parsedCount} > {MaxStreamEvents}，强制终止流");
+                    yield break;
+                }
+
+                // 记录是否收到过 finish 事件
+                if (parsedEvent.Type == "finish")
+                    hadFinishEvent = true;
+
                 yield return parsedEvent;
             }
             else if (!string.IsNullOrWhiteSpace(readLine))
@@ -1413,6 +1641,15 @@ public class AiClient : IAiClient, IDisposable
         }
 
         Logger.Debug($"SSE 流解析统计: 共 {lineNum} 行, 成功解析 {parsedCount} 个事件, 丢弃 {droppedCount} 行");
+
+        // ★ 关键修复：SSE 流结束但服务器未发送 finish_reason → 自动补发 finish(stop)
+        //   kimi-k2.6 等推理模型会在 reasoning_content 后直接关闭 TCP 连接，
+        //   跳过 finish_reason 事件，导致 ParseStreamRichAsync 永远没有 finish 事件。
+        if (!hadFinishEvent)
+        {
+            Logger.Debug("SSE 流结束但未收到 finish_reason，自动补发 finish(stop)");
+            yield return new AiStreamEvent { Type = "finish", FinishReason = "stop" };
+        }
     }
 
     /// <summary>解析 OpenAI 格式单行 SSE，返回事件对象</summary>
@@ -1555,6 +1792,47 @@ public class AiClient : IAiClient, IDisposable
     }
 
     // ========== 辅助方法 ==========
+
+    /// <summary>
+    /// 判断工具执行结果是否代表成功。
+    /// 使用 JSON 解析而非字符串包含，避免 {"ok":true,"error":null} 被误判为失败。
+    /// </summary>
+    private static bool DetermineActionOk(string? toolResult)
+    {
+        if (string.IsNullOrWhiteSpace(toolResult))
+            return false;
+
+        // 快速路径：纯文本结果中明确包含失败关键词
+        if (toolResult.Contains("失败", StringComparison.OrdinalIgnoreCase)
+            && !toolResult.Contains("\"error\":null", StringComparison.OrdinalIgnoreCase)
+            && !toolResult.Contains("\"error\": null", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        // JSON 路径：解析 ok 字段和 error 字段
+        try
+        {
+            using var doc = JsonDocument.Parse(toolResult);
+            var root = doc.RootElement;
+
+            // 有 ok=false → 失败
+            if (root.TryGetProperty("ok", out var okEl) && okEl.ValueKind == JsonValueKind.False)
+                return false;
+
+            // 没有 ok 字段但有 error 字段且有值 → 失败
+            if (root.TryGetProperty("error", out var errorEl)
+                && errorEl.ValueKind != JsonValueKind.Null
+                && errorEl.ValueKind != JsonValueKind.Undefined)
+                return false;
+
+            // 其他情况视为成功
+            return true;
+        }
+        catch
+        {
+            // 非 JSON 文本，回退到旧逻辑
+            return !toolResult.Contains("失败", StringComparison.OrdinalIgnoreCase);
+        }
+    }
 
     /// <summary>
     /// 校验并修复工具调用参数 JSON。
@@ -1971,6 +2249,137 @@ public class AiClient : IAiClient, IDisposable
     private static string TruncateError(string error, int maxLen = 300)
         => error.Length <= maxLen ? error : error[..maxLen] + "…";
 
+    // ========== 服务端 API 错误自然语言描述 ==========
+
+    /// <summary>
+    /// 将服务器返回的原始错误体转换为自然语言描述，便于 AI 理解并自行纠正。
+    /// 支持 OpenAI 兼容格式、Anthropic 原生格式以及常见厂商的嵌套结构。
+    /// </summary>
+    private static string DescribeServerApiError(string rawError)
+    {
+        if (string.IsNullOrWhiteSpace(rawError))
+            return string.Empty;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(rawError);
+            var root = doc.RootElement;
+
+            // ── 标准 OpenAI 兼容格式 ──
+            // {"error": {"message": "...", "type": "...", "code": "..."}}
+            if (root.TryGetProperty("error", out var errorObj) && errorObj.ValueKind == JsonValueKind.Object)
+            {
+                // 有些厂商二次嵌套: {"error": {"error": {...}}}
+                if (errorObj.TryGetProperty("error", out var innerError) && innerError.ValueKind == JsonValueKind.Object)
+                    errorObj = innerError;
+
+                var message = errorObj.TryGetProperty("message", out var msgEl)
+                    ? msgEl.GetString() ?? ""
+                    : errorObj.TryGetProperty("message", out msgEl) && msgEl.ValueKind == JsonValueKind.String
+                        ? msgEl.GetString() ?? ""
+                        : string.Empty;
+
+                var errorCode = errorObj.TryGetProperty("code", out var codeEl)
+                    ? (codeEl.ValueKind == JsonValueKind.String ? codeEl.GetString() ?? "" : codeEl.GetRawText())
+                    : errorObj.TryGetProperty("code", out codeEl) && codeEl.ValueKind == JsonValueKind.String
+                        ? codeEl.GetString() ?? ""
+                        : string.Empty;
+
+                var errorType = errorObj.TryGetProperty("type", out var typeEl)
+                    ? typeEl.GetString() ?? ""
+                    : string.Empty;
+
+                if (!string.IsNullOrEmpty(message))
+                {
+                    var desc = BuildApiErrorDescription(message, errorCode, errorType, rawError);
+                    Logger.Info($"API 错误自然语言描述: {desc}");
+                    return desc;
+                }
+            }
+
+            // ── Anthropic 原生格式 ──
+            // {"error": {"message": "...", "type": "..."}}
+            // 上面已经覆盖了，不再重复
+
+            // ── 兜底：尝试提取任何可见的错误关键字 ──
+            var text = rawError.Length > 500 ? rawError[..500] : rawError;
+            return text;
+        }
+        catch
+        {
+            // 非 JSON 或解析失败，原样返回
+            return rawError.Length > 500 ? rawError[..500] + "…" : rawError;
+        }
+    }
+
+    /// <summary>
+    /// 根据 message / code / type 构建自然语言描述。
+    /// </summary>
+    private static string BuildApiErrorDescription(string message, string errorCode, string errorType, string fallbackRaw)
+    {
+        var msgLower = message.ToLowerInvariant();
+        var codeLower = errorCode.ToLowerInvariant();
+        var typeLower = errorType.ToLowerInvariant();
+
+        // 合并所有关键字用于匹配
+        var keywords = $"{codeLower} {typeLower} {msgLower}";
+
+        // ── 认证错误 ──
+        if (keywords.Contains("invalid_api_key") || keywords.Contains("authentication") || keywords.Contains("api key not valid"))
+            return "🔑 API 密钥无效或已过期，请检查 AI 设置中的 API Key 是否正确。";
+
+        // ── 模型相关 ──
+        if (keywords.Contains("model_not_found") || keywords.Contains("model was deleted") || keywords.Contains("specified model does not exist")
+            || keywords.Contains("指定的模型") || keywords.Contains("模型不存在") || keywords.Contains("model not found"))
+            return $"🤖 指定的模型不存在或已被移除。请检查 AI 设置中的模型名称是否正确。（{TruncateError(message, 120)}）";
+
+        if (keywords.Contains("invalid_model") || keywords.Contains("unrecognized request uri") || keywords.Contains("不支持的模型"))
+            return $"🤖 模型名称格式不正确或被服务商拒绝。请检查 AI 设置中的模型名称。（{TruncateError(message, 120)}）";
+
+        // ── 上下文窗口超限 ──
+        if (keywords.Contains("context_length_exceeded") || keywords.Contains("maximum context length") || keywords.Contains("max context")
+            || keywords.Contains("上下文") || keywords.Contains("context window"))
+            return $"📝 对话上下文过长，超过了模型的上下文窗口限制。系统将自动压缩历史后重试。";
+
+        // ── 速率限制 ──
+        if (keywords.Contains("rate_limit") || keywords.Contains("too many requests") || keywords.Contains("请求过于频繁")
+            || keywords.Contains("超出频率") || keywords.Contains("429"))
+            return $"⏳ 服务商速率限制：请求过于频繁，请稍后重试或调整并发设置。";
+
+        // ── 余额/配额不足 ──
+        if (keywords.Contains("insufficient_quota") || keywords.Contains("billing limits") || keywords.Contains("余额")
+            || keywords.Contains("配额") || keywords.Contains("billing"))
+            return $"💰 账户余额或配额不足，请联系管理员充值或检查账单设置。";
+
+        // ── 服务器/网关错误 ──
+        if (keywords.Contains("server error") || keywords.Contains("internal error") || keywords.Contains("upstream error")
+            || keywords.Contains("服务不可用") || keywords.Contains("服务器错误") || keywords.Contains("网关错误"))
+            return $"🔧 服务商服务器内部错误，请稍后重试。";
+
+        if (keywords.Contains("gateway timeout") || keywords.Contains("request timeout") || keywords.Contains("请求超时"))
+            return $"⏱️ 服务商响应超时，请稍后重试。";
+
+        // ── 内容安全/审核 ──
+        if (keywords.Contains("content_policy") || keywords.Contains("content filter") || keywords.Contains("moderation")
+            || keywords.Contains("内容安全") || keywords.Contains("内容过滤"))
+            return $"🛡️ 请求触发了服务商的内容安全策略，请调整输入内容后重试。";
+
+        // ── 引擎/端点错误（火山方舟等） ──
+        if (keywords.Contains("engine_not_found") || keywords.Contains("endpoint_not_found") || keywords.Contains("未找到引擎")
+            || keywords.Contains("endpoint") || keywords.Contains("端点"))
+            return $"🔗 服务商端点或引擎配置有误，请检查 AI 设置中的端点地址。（{TruncateError(message, 120)}）";
+
+        // ── 参数错误 ──
+        if (keywords.Contains("invalid_parameter") || keywords.Contains("invalid_request_error") || keywords.Contains("参数无效"))
+            return $"⚙️ 请求参数有误：{TruncateError(message, 200)}。";
+
+        // ── 通用错误 ──
+        if (!string.IsNullOrEmpty(message))
+            return $"⚠️ 服务商返回错误：{TruncateError(message, 250)}。";
+
+        return $"⚠️ API 请求失败: {TruncateError(fallbackRaw, 250)}";
+    }
+
     // ========== 配置持久化 ==========
 
     public void SaveSettings()
@@ -2218,6 +2627,60 @@ public class AiClient : IAiClient, IDisposable
     }
 
     /// <summary>
+    /// 将文本切分为指定大小的滑动窗口 n-gram（按字符级别，适合中文/英文通用）。
+    /// 为控制内存，超过 MaxNgramTextLength 的文本会采样切分。
+    /// </summary>
+    private static List<string> GetNgrams(string text, int ngramSize)
+    {
+        if (string.IsNullOrWhiteSpace(text) || text.Length < ngramSize)
+            return new List<string>();
+
+        const int MaxNgramTextLength = 5000;
+        var ngrams = new List<string>();
+
+        if (text.Length <= MaxNgramTextLength)
+        {
+            ngrams = new List<string>(text.Length - ngramSize + 1);
+            for (int i = 0; i <= text.Length - ngramSize; i++)
+            {
+                ngrams.Add(text.Substring(i, ngramSize));
+            }
+        }
+        else
+        {
+            // 超长文本：每 10 个字符采样一个 n-gram，避免 OOM
+            int step = 10;
+            ngrams = new List<string>((text.Length - ngramSize) / step + 1);
+            for (int i = 0; i <= text.Length - ngramSize; i += step)
+            {
+                ngrams.Add(text.Substring(i, ngramSize));
+            }
+        }
+
+        return ngrams;
+    }
+
+    /// <summary>
+    /// 限制 AI 纯文本回复的最大长度，防止超长文本卡死 UI 线程。
+    /// 保留开头（含 thinking/conclusion 分区）和尾部结论，中间部分截断。
+    /// </summary>
+    private static string LimitAiReplyLength(string text)
+    {
+        if (text.Length <= MaxAiReplyChars)
+            return text;
+
+        var headChars = MaxAiReplyChars / 2;  // 4000
+        var tailChars = 500;
+        var tailStart = text.Length - tailChars;
+        var head = text[..headChars];
+        var tail = text[tailStart..];
+
+        var truncated = $"{head}\n\n...[AI 回复过长，已截断中间 {text.Length - headChars - tailChars} 字符，仅保留开头和结尾]...\n\n{tail}";
+        Logger.Warning($"AI 回复超长截断: {text.Length} → {truncated.Length} 字符（上限 {MaxAiReplyChars}）");
+        return truncated;
+    }
+
+    /// <summary>
     /// 检测工具结果是否为 {"data": "null"} 形式（JSON null 被序列化为了字符串 "null"）
     /// 这种情况表示 JS 执行成功但结果为空/undefined，不是有效数据。
     /// </summary>
@@ -2257,6 +2720,38 @@ public class AiClient : IAiClient, IDisposable
     }
 
     /// <summary>
+    /// 检测 browser_js 返回的 data 字段是否为无意义的空结构（{} 或 []）。
+    /// 这类结果表示 JS 执行成功但未提取到任何有效数据，AI 不应重复尝试相同选择器。
+    /// </summary>
+    private static bool IsEmptyObjectResult(string result)
+    {
+        if (string.IsNullOrWhiteSpace(result))
+            return false;
+
+        // 只检测 browser_js 格式的结果: {"ok":true,"data":"{}",...}
+        // 或: {"ok":true,"data":"[]",...}
+        try
+        {
+            using var doc = JsonDocument.Parse(result);
+            var root = doc.RootElement;
+            if (root.TryGetProperty("ok", out var okEl) && okEl.ValueKind == JsonValueKind.True)
+            {
+                if (root.TryGetProperty("data", out var dataEl) && dataEl.ValueKind == JsonValueKind.String)
+                {
+                    var dataStr = dataEl.GetString()?.Trim();
+                    return dataStr == "{}" || dataStr == "[]" || dataStr == "null";
+                }
+            }
+        }
+        catch
+        {
+            // 非 JSON 结果不匹配
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// 递增 browser_js null 计数器：非 browser_js 调用时重置为 0。
     /// 返回递增后的值。
     /// </summary>
@@ -2274,4 +2769,36 @@ public class AiClient : IAiClient, IDisposable
     }
 
     public void Dispose() => _http.Dispose();
+
+    /// <summary>将对话消息序列化为日志文本（角色名 + 内容）</summary>
+    private static string SerializeConversationForLog(IEnumerable<ChatMessage> messages)
+    {
+        const int MaxContentPerMessage = 500; // 每条消息最多记录 500 字符，防止超大工具结果（如快照）撑爆内存
+        var sb = new StringBuilder();
+        foreach (var m in messages)
+        {
+            var roleLabel = m.Role switch
+            {
+                MessageRole.System => "[系统]",
+                MessageRole.User => "[用户]",
+                MessageRole.Assistant => "[AI]",
+                MessageRole.Tool => $"[工具:{m.ToolName}]",
+                _ => $"[{m.Role}]"
+            };
+
+            if (m.Role == MessageRole.Assistant && m.HasToolCalls)
+            {
+                var toolNames = string.Join(", ", m.ToolCalls!.Select(tc => tc.FunctionName));
+                sb.AppendLine($"{roleLabel} 工具调用: {toolNames}");
+            }
+            else if (!string.IsNullOrWhiteSpace(m.Content))
+            {
+                var content = m.Content.Length > MaxContentPerMessage
+                    ? m.Content[..MaxContentPerMessage] + "..."
+                    : m.Content;
+                sb.AppendLine($"{roleLabel} {content}");
+            }
+        }
+        return sb.ToString();
+    }
 }

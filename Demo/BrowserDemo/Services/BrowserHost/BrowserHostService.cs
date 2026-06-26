@@ -35,6 +35,7 @@ public class BrowserHostService : IDisposable
 
     public BrowserHostService(Dispatcher dispatcher, Panel container)
     {
+        Logger.Trace("BrowserHostService..ctor");
         _dispatcher = dispatcher ?? throw new ArgumentNullException(nameof(dispatcher));
         _container = container ?? throw new ArgumentNullException(nameof(container));
     }
@@ -102,7 +103,12 @@ public class BrowserHostService : IDisposable
     /// </summary>
     public async Task InitializeAsync()
     {
-        if (_environment != null) return;
+        using var _ = Logger.Trace("BrowserHostService.InitializeAsync");
+        if (_environment != null)
+        {
+            Logger.Debug("BrowserHostService 已初始化，跳过");
+            return;
+        }
 
         var options = new CoreWebView2EnvironmentOptions
         {
@@ -136,6 +142,7 @@ public class BrowserHostService : IDisposable
     /// </summary>
     public async Task<TabInfo> CreateTabForAsync(TabInfo tab, string url = "about:blank")
     {
+        using var _ = Logger.Trace("BrowserHostService.CreateTabForAsync");
         ThrowIfDisposed();
         if (_environment == null)
             throw new InvalidOperationException("BrowserHostService 未初始化，请先 await InitializeAsync()");
@@ -182,6 +189,7 @@ public class BrowserHostService : IDisposable
     /// </summary>
     public void ActivateTab(Guid tabId)
     {
+        using var _ = Logger.Trace("BrowserHostService.ActivateTab");
         ThrowIfDisposed();
         if (!_webViews.TryGetValue(tabId, out var target))
             return;
@@ -198,6 +206,7 @@ public class BrowserHostService : IDisposable
     /// </summary>
     public async Task CloseTabAsync(Guid tabId)
     {
+        using var _ = Logger.Trace("BrowserHostService.CloseTabAsync");
         ThrowIfDisposed();
         if (!_webViews.TryGetValue(tabId, out var wv))
             return;
@@ -218,7 +227,11 @@ public class BrowserHostService : IDisposable
 
     /// <summary>获取标签对应的 WebView2 控件（不存在返回 null）</summary>
     public WebView2? GetWebViewForTab(Guid tabId)
-        => _webViews.TryGetValue(tabId, out var wv) ? wv : null;
+    {
+        var found = _webViews.TryGetValue(tabId, out var wv);
+        Logger.Debug($"[GetWebViewForTab] tabId={tabId}, found={found}");
+        return wv;
+    }
 
     // ====================================================================
     // 内部：配置与事件绑定
@@ -226,6 +239,7 @@ public class BrowserHostService : IDisposable
 
     private void ConfigureCoreWebView2(CoreWebView2 core)
     {
+        Logger.Debug("[ConfigureCoreWebView2] 配置 CoreWebView2 设置");
         var s = core.Settings;
         s.IsScriptEnabled = true;
         s.AreDefaultScriptDialogsEnabled = false; // 关闭原生弹窗 UI（由 ScriptDialogOpening 接管）
@@ -240,6 +254,7 @@ public class BrowserHostService : IDisposable
 
     private void BindCoreEvents(TabInfo tab, WebView2 wv)
     {
+        Logger.Debug($"[BindCoreEvents] tabId={tab.Id}, 绑定导航/下载/标题/URL/崩溃事件");
         var core = wv.CoreWebView2;
 
         // ★ 导航开始 ★
@@ -362,6 +377,7 @@ public class BrowserHostService : IDisposable
 
     public void Dispose()
     {
+        Logger.Info("[Dispose] BrowserHostService 正在释放，关闭所有标签页");
         if (_disposed) return;
         _disposed = true;
 
